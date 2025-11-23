@@ -126,7 +126,7 @@ class BulletNavigationEnv(gym.Env):
     def step(self, action):
         hover_rpm = 31700
         thrust = action[3]
-        base_rpm = hover_rpm * (thrust * 4000)
+        base_rpm = hover_rpm + (thrust * 4000)
         
         mix_matrix = np.array([[1, -1, -1], [-1, -1, 1], [-1, 1, -1], [1, 1, 1]])
         mix = mix_matrix @ action[:3]

@@ -52,13 +52,15 @@ def run_one_episode(env, agent, max_steps, algo):
             else:
                 action = agent.get_action(state_vec, img = img_data, lidar = lidar_data)
         
+        print("Step:", step, "Action:", action)
+        
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         obs = next_obs
         episode_reward += reward
         
         # Slow down for visualization
-        time.sleep(1/60) 
+        time.sleep(0.1) 
         
         if done:
             break
