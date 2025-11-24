@@ -10,7 +10,7 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 class BulletNavigationEnv(gym.Env):
     def __init__(self, waypoints, use_camera = False, use_depth = False, use_lidar = False, 
                  use_obstacles = False, waypoint_threshold = 1.0, waypoint_bonus = 100.0,
-                 crash_penalty = 100.0, timeout_penalty = 10.0, per_step_penalty = -0.1,
+                 crash_penalty = -100.0, timeout_penalty = -10.0, per_step_penalty = -0.1,
                  max_dist_from_target = 10.0, gui = False, show_waypoints = False):
         
         self.waypoints = waypoints
@@ -155,11 +155,12 @@ class BulletNavigationEnv(gym.Env):
             target_rpy_rates = np.array([0, 0, target_yaw_rate])
         )
         
-        # 4. Step the environment with calculated RPMs
+        # Step the environment with calculated RPMs
         self.env.step(rpm.reshape(1, 4))
         
         obs = self._get_observation()
-        reward = self.per_step_penalty
+        reward = 0
+        reward += self.per_step_penalty
         
         current_pos = obs["state"][:3]
         dist = np.linalg.norm(current_pos - self.target_pos)
@@ -175,11 +176,14 @@ class BulletNavigationEnv(gym.Env):
         truncated = False
 
         if dist > self.max_dist_from_target:
-            reward -= self.timeout_penalty
+            reward += self.timeout_penalty
             terminated = True
 
         if dist < self.waypoint_threshold:
-            reward += self.waypoint_bonus
+            # If dist = threshold, scale = 1.0 -> Reward = Bonus
+            # If dist = 0, scale = 2.0 -> Reward = 2 * Bonus
+            precision_scale = 2.0 - (dist / self.waypoint_threshold)
+            reward += self.waypoint_bonus * precision_scale
             self.current_wp_idx += 1
 
             if self.current_wp_idx >= len(self.waypoints):
@@ -193,11 +197,11 @@ class BulletNavigationEnv(gym.Env):
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
         if current_pos[2] < 0.1: 
-            reward -= self.crash_penalty
+            reward += self.crash_penalty
             terminated = True
             
         if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 20:
-            reward -= self.crash_penalty
+            reward += self.crash_penalty
             terminated = True
 
         info = {

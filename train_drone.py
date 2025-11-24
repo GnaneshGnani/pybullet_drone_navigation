@@ -11,10 +11,17 @@ from utils import initialize_agent
 from bullet_env import BulletNavigationEnv
 from waypoint_manager import WaypointManager
 
+class DummyLogger:
+    def report_scalar(self, title, series, value, iteration):
+        pass
+
+    def flush(self):
+        pass
+
 def parse_args():
     parser = argparse.ArgumentParser(description = "Train PyBullet Drone")
     
-    # --- NEW: Curriculum Flags ---
+    # Curriculum Flags
     parser.add_argument("--task", type = str, default = "hover", choices = ["hover", "square", "random"], 
                         help = "Curriculum Phase: hover (Phase 1), square (Phase 2), random (Phase 3)")
     parser.add_argument("--load_model", type = str, default = "", 
@@ -23,7 +30,7 @@ def parse_args():
     # Training Params
     parser.add_argument("--episodes", type = int, default = 2000)
     parser.add_argument("--algo", type = str, default = "sac", choices = ["sac", "ppo", "ddpg"])
-    parser.add_argument("--max_steps", type = int, default = 3000) # Reduced max steps
+    parser.add_argument("--max_steps", type = int, default = 3000)
     parser.add_argument("--batch_size", type = int, default = 64)
     parser.add_argument("--buffer_size", type = int, default = 50000)
     parser.add_argument("--actor_lr", type = float, default = 3e-4)
@@ -40,12 +47,12 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
-    parser.add_argument("--crash_penalty", type = float, default = 50.0)
-    parser.add_argument("--timeout_penalty", type = float, default = 10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = -0.05)
+    parser.add_argument("--waypoint_bonus", type = float, default = 25.0)
+    parser.add_argument("--crash_penalty", type = float, default = -50.0)
+    parser.add_argument("--timeout_penalty", type = float, default = -10.0)
+    parser.add_argument("--per_step_penalty", type = float, default = 0)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.5)
-    parser.add_argument("--max_dist_from_target", type = float, default = 10.0)
+    parser.add_argument("--max_dist_from_target", type = float, default = 5.0)
 
     # Logging
     parser.add_argument("--project_name", type = str, default = "PyBullet Training")
@@ -57,6 +64,7 @@ def parse_args():
     parser.add_argument("--visualize", action = "store_true")
     parser.add_argument("--run_tag", type = str, default = "run")
     parser.add_argument("--save_dir", type = str, default = "./training_runs")
+    parser.add_argument("--no_logging", action = "store_true", help = "Disable ClearML logging for debugging/local runs.")
 
     return parser.parse_args()
 
@@ -96,6 +104,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
                     loss_metrics["critic_loss"].append(losses[1])
                     loss_metrics["alpha_loss"].append(losses[2])
                     loss_metrics["total_loss"].append(sum(losses))
+                    
                 elif len(losses) == 2: # DDPG
                     loss_metrics["actor_loss"].append(losses[0])
                     loss_metrics["critic_loss"].append(losses[1])
@@ -111,7 +120,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         if terminated: last_value = 0
         else: _, _, last_value = agent.get_action(obs["state"], img = obs["image"], lidar = obs["lidar"])
         
-        if len(agent.buffer) >= agent.batch_size:
+        if len(agent.buffer) >=  agent.batch_size:
             ppo_losses = agent.learn(last_value, terminated)
             if ppo_losses and ppo_losses[0] is not None:
                 loss_metrics["actor_loss"].append(ppo_losses[0])
@@ -137,30 +146,31 @@ def main():
     with open(os.path.join(save_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent = 4)
 
-    task = Task.init(project_name = args.project_name, task_name = final_run_name)
-    task.connect(args) 
-    logger = task.get_logger()
+    if not args.no_logging:
+        print(f"--- Initializing ClearML: {args.project_name} | {args.task_name} ---")
+        task = Task.init(project_name = args.project_name, task_name = final_run_name)
+        task.connect(args) 
+        logger = task.get_logger()
+
+    else:
+        print("--- Logging DISABLED (Local Run) ---")
+        logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
 
     wpm = WaypointManager()
     
     print(f"--- Configuring Task: {args.task.upper()} ---")
     if args.task == "hover":
-        # Phase 1: Just try to stay at z = 1.0 at origin
         waypoints = wpm.generate_hover_target(altitude = 1.0)
-        # Tighten constraints for hover training
         args.max_dist_from_target = 3.0 
     
     elif args.task == "square":
-        # Phase 2: Simple square
         waypoints = wpm.generate_square_path(side_length = 4.0)
         args.max_dist_from_target = 5.0
 
     elif args.task == "random":
-        # Phase 3: Random points + obstacles
         waypoints = wpm.generate_random_walk_path()
         args.use_obstacles = True 
     
-    # 4. Initialize Env
     env = BulletNavigationEnv(
         waypoints = waypoints,
         use_camera = args.use_camera,
@@ -207,21 +217,20 @@ def main():
             reward_window.append(reward)
             avg_reward = np.mean(reward_window)
 
-            # Logging
             logger.report_scalar(title = "Training", series = "Reward", value = float(reward), iteration = episode)
             logger.report_scalar(title = "Training", series = "Avg Reward", value = float(avg_reward), iteration = episode)
-            logger.report_scalar(title = "Performance", series = "Completion %", value = float((info["waypoints_reached"] / info["total_waypoints"]) * 100), iteration = episode)
+            logger.report_scalar(title = "Performance", series = "Completion %", value = float((info["waypoints_reached"] / info.get("total_waypoints", 1)) * 100), iteration = episode)
             
             for key, val in metrics.items():
                 logger.report_scalar(title = "Loss", series = key, value = float(val), iteration = episode)
             
             print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
+            
+            logger.flush()
 
-            # Save periodically
             if episode % args.save_interval == 0:
                 agent.save_models(save_dir)
 
-        # Save Final
         print(f"Training Complete. Saving final model to {save_dir}...")
         agent.save_models(save_dir)
                 

@@ -19,10 +19,12 @@ class WaypointManager:
 
     def generate_hover_target(self, altitude = 1.0):
         self.clear_waypoints()
+        
         # We add the same point multiple times so the episode doesn't end 
         # instantly when the drone reaches it. It has to STAY there.
-        for _ in range(100): 
+        for _ in range(1000): 
             self.add_waypoint(0, 0, altitude)
+
         return self.get_waypoints()
 
     def generate_square_path(self, side_length = 4.0, altitude = 1.5): 
