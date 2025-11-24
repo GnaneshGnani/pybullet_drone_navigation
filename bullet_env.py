@@ -74,7 +74,7 @@ class BulletNavigationEnv(gym.Env):
         
         self.observation_space = gym.spaces.Dict(obs_spaces)
 
-    def _generate_random_hover_target(self, altitude = 1.0):
+    def _generate_random_hover_target(self, altitude = 0.75):
         # Generate a random horizontal offset for the hover point (e.g., 2m box)
         random_x = np.random.uniform(-0.25, 0.25)
         random_y = np.random.uniform(-0.25, 0.25)
