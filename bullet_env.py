@@ -130,7 +130,7 @@ class BulletNavigationEnv(gym.Env):
         
         mix_matrix = np.array([[1, -1, -1], [-1, -1, 1], [-1, 1, -1], [1, 1, 1]])
         mix = mix_matrix @ action[:3]
-        pwms = np.clip(base_rpm + mix * 4000, 0, 60000)
+        pwms = np.clip(base_rpm + mix * 1500, 0, 60000)
         
         self.env.step(pwms.reshape(1, 4))
         
@@ -143,6 +143,13 @@ class BulletNavigationEnv(gym.Env):
         
         reward += (self.prev_dist - dist) * 10.0
         self.prev_dist = dist
+
+        ang_vel = obs["state"][10 : 13]
+        # Penalize high angular velocity to prevent spinning/tumbling
+        reward -= np.linalg.norm(ang_vel) * 0.05
+        
+        # Penalize erratic control inputs (optional, helps smoothness)
+        reward -= np.linalg.norm(action[:3]) * 0.1
         
         terminated = False
         truncated = False

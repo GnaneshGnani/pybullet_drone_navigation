@@ -18,15 +18,15 @@ class WaypointManager:
         self.waypoints = []
         self.visual_ids = []
 
-    def generate_square_path(self, side_length = 10, altitude = 5):
+    def generate_square_path(self, side_length = 10, altitude = 2.5):
         self.clear_waypoints()
         half = side_length / 2
 
         coords = [
-            (0, 0, 5), (half, 0, altitude), (half, half, altitude),
+            (0, 0, altitude), (half, 0, altitude), (half, half, altitude),
             (0, half, altitude), (-half, half, altitude), (-half, 0, altitude),
             (-half, -half, altitude), (0, -half, altitude), (half, -half, altitude),
-            (0, 0, 5)
+            (0, 0, altitude)
         ]
 
         for x, y, z in coords:
