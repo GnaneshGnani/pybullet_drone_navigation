@@ -171,10 +171,10 @@ class BulletNavigationEnv(gym.Env):
         # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
         # Max speed reduced from 1.0 m/s to 0.5 m/s
         # Max Yaw rate reduced from 1.0 rad/s to 0.5 rad/s
-        action_body = np.array(action[:3]) * 0.75 
+        action_body = np.array(action[:3])
         target_v_world = r.apply(action_body)
 
-        target_yaw_rate = action[3] * 0.75     
+        target_yaw_rate = action[3] 
 
         # Compute RPMs using DSLPIDControl
         rpm, _, _ = self.ctrl.computeControl(

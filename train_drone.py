@@ -84,6 +84,9 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         else:
             action = agent.get_action(state_vec, img = img_data, lidar = lidar_data)
             log_prob, value = None, None
+        
+        SAFE_SPEED_CLIP = 0.25 
+        action = np.clip(action, -SAFE_SPEED_CLIP, SAFE_SPEED_CLIP)
 
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
