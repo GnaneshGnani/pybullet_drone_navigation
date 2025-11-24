@@ -14,7 +14,10 @@ class BulletNavigationEnv(gym.Env):
                  crash_penalty = -100.0, timeout_penalty = -10.0, per_step_penalty = -0.1,
                  max_dist_from_target = 10.0, gui = False, show_waypoints = False):
         
+        # Store a copy of the initial waypoints to detect the task type
+        self._initial_waypoints = waypoints
         self.waypoints = waypoints
+        
         self.use_camera = use_camera
         self.use_depth = use_depth
         self.use_lidar = use_lidar
@@ -29,6 +32,9 @@ class BulletNavigationEnv(gym.Env):
         self.crash_penalty = crash_penalty
         self.timeout_penalty = timeout_penalty
         self.per_step_penalty = per_step_penalty
+        
+        # State Augmentation: Previous Action
+        self.prev_action = np.zeros(4)
         
         # Visualization IDs
         self.marker_ids = [] 
@@ -50,7 +56,9 @@ class BulletNavigationEnv(gym.Env):
         # Action Space
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
-        self.state_dim = 13
+        
+        # State Dimension: 13 (Pos/Vel/Quat) + 4 (Prev Action) = 17
+        self.state_dim = 17
         self.lidar_rays = 360
 
         obs_spaces = {
@@ -66,9 +74,30 @@ class BulletNavigationEnv(gym.Env):
         
         self.observation_space = gym.spaces.Dict(obs_spaces)
 
+    def _generate_random_hover_target(self, altitude = 1.0):
+        # Generate a random horizontal offset for the hover point (e.g., 2m box)
+        random_x = np.random.uniform(-1.0, 1.0)
+        random_y = np.random.uniform(-1.0, 1.0)
+        
+        # Create a new list of 1000 identical waypoints at the new random location
+        new_waypoints = [np.array([random_x, random_y, altitude]) for _ in range(1000)]
+        return np.array(new_waypoints)
+
+
     def reset(self, seed = None, options = None):
         self.env.reset()
         
+        # Logic to detect and randomize hover task
+        # If the original waypoints were a long list of the same point (Hover Task)
+        is_fixed_hover = (len(self._initial_waypoints) == 1000 and 
+                          np.allclose(self._initial_waypoints[0], self._initial_waypoints[-1]))
+        
+        if is_fixed_hover:
+            # Randomize the target position for this episode
+            self.waypoints = self._generate_random_hover_target(altitude = self._initial_waypoints[0][2])
+        else:
+            self.waypoints = self._initial_waypoints
+
         if len(self.waypoints) == 0:
             raise ValueError("No waypoints provided.")
         
@@ -77,7 +106,8 @@ class BulletNavigationEnv(gym.Env):
         self.current_wp_idx = 0
         self.target_pos = self.waypoints[self.current_wp_idx]
         self.prev_dist = np.linalg.norm(self._get_drone_pos() - self.target_pos)
-
+        self.prev_action = np.zeros(4) # Reset previous action
+        
         if self.use_obstacles:
             self._spawn_obstacles()
 
@@ -94,7 +124,9 @@ class BulletNavigationEnv(gym.Env):
             self.debug_line_ids = []
 
             for i, wp in enumerate(self.waypoints):
-                print("Waypoint", i, wp)
+                # Only draw the first waypoint for hover tasks, or all for pathing
+                if len(self.waypoints) > 1 and np.allclose(self.waypoints[0], self.waypoints[-1]) and i > 0:
+                    break 
 
                 visual_shape_id = p.createVisualShape(
                     shapeType = p.GEOM_SPHERE,
@@ -136,17 +168,15 @@ class BulletNavigationEnv(gym.Env):
         
         r = R.from_quat(quat)
 
-        # Map Action [-1, 1] to Target Velocities
-        # Speed limit: +/- 1.0 m/s
-        # Yaw rate: +/- 1.0 rad/s
-        action_body = np.array(action[:3]) * 1.0 # Max speed 1.0 m/s
+        # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
+        # Max speed reduced from 1.0 m/s to 0.5 m/s
+        # Max Yaw rate reduced from 1.0 rad/s to 0.5 rad/s
+        action_body = np.array(action[:3]) * 0.57 
         target_v_world = r.apply(action_body)
 
-        target_yaw_rate = action[3] * 1.0      
+        target_yaw_rate = action[3] * 0.75     
 
         # Compute RPMs using DSLPIDControl
-        # We pass `target_pos = pos` because we are doing VELOCITY control.
-        # The PID controller will try to match `target_v`.
         rpm, _, _ = self.ctrl.computeControl(
             control_timestep = 1.0 / self.env.CTRL_FREQ,
 
@@ -167,37 +197,29 @@ class BulletNavigationEnv(gym.Env):
         
         obs = self._get_observation()
         reward = 0
-        reward += self.per_step_penalty
+        
+        # Per-Step Penalty (REVISED: Milder penalty for smoother flight preference)
+        reward += (self.per_step_penalty * 0.1) # e.g., -0.01 instead of -0.1
         
         current_pos = np.array(pos)
         dist = np.linalg.norm(current_pos - self.target_pos)
         self.prev_dist = dist
         
-        # Dense Position Reward (Always positive gradient towards target)
-        # Using 1/(1 + dist) creates a smooth curve from 0 (far) to 1 (at target)
-        dist_reward = 1.0 / (1.0 + dist * 0.5) 
+        # Dense Position Reward (REVISED: Steeper gradient near target)
+        # Using 2.0 / (1.0 + dist^2) gives a much stronger pull near dist=0
+        dist_reward = 3.0 / (1.0 + dist ** 2) 
         reward += dist_reward
 
         # Drift Penalty
-        # This forces the net reward to be negative if the drone is too far
         reward -= (dist * 0.1)
         
-        # Variable Stability Penalty
-        # We want the penalty to be HIGH when close (dist -> 0)
-        # and LOW when far (dist -> inf).
+        # Stability Penalty (REVISED: Simple, constant, and low-magnitude penalty for ALL movement)
         vel_mag = np.linalg.norm(lin_vel)
         ang_mag = np.linalg.norm(ang_vel)
         
-        # This factor is ~0.0 when close, and ~1.0 when far
-        # This ensures a high velocity/angular penalty ONLY when far from the target.
-        # When close, the factor is near 0, rewarding a smooth, stable hover.
-        distance_factor = (dist ** 2) / (1.0 + (dist ** 2))
-        
-        # Penalty scales with closeness. 
-        # If far: penalty is small (allowed to fly fast).
-        # If close: penalty is high (must stop).
-        reward -= (vel_mag * 0.5 * distance_factor)
-        reward -= (ang_mag * 0.05 * distance_factor)
+        # Always penalize speed/rotation, but weakly, to promote hovering.
+        reward -= (vel_mag * 0.1)  
+        reward -= (ang_mag * 0.01) 
         
         terminated = False
         truncated = False
@@ -207,7 +229,8 @@ class BulletNavigationEnv(gym.Env):
         # If the list is not empty, we hit something (Floor or Obstacle)
         if len(contact_points) > 0:
             print("Crashed!")
-            reward += self.crash_penalty
+            # Crash Penalty (REVISED: Milder penalty to allow for exploration)
+            reward += (self.crash_penalty / 2) # e.g., -50.0 instead of -100.0
             terminated = True
 
         if dist > self.max_dist_from_target:
@@ -217,9 +240,11 @@ class BulletNavigationEnv(gym.Env):
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
+            
+            # Massive stability bonus for being stable inside the target area
             if vel_mag < 0.2:
                 print("Velocity Reward")
-                reward += 20.0
+                reward += 200.0 # Increased stability bonus
 
             self.current_wp_idx += 1
 
@@ -235,14 +260,15 @@ class BulletNavigationEnv(gym.Env):
 
         if current_pos[2] < 0.05: 
             print("Hit the Ground!")
-            # reward += self.crash_penalty
             terminated = True
             
         if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
             print("Out of Boundary!")
-            # reward += self.crash_penalty
             terminated = True
 
+        # Store the current action for the next time step's observation
+        self.prev_action = np.array(action)
+        
         info = {
             "waypoints_reached": self.current_wp_idx,
             "total_waypoints": len(self.waypoints),
@@ -271,7 +297,8 @@ class BulletNavigationEnv(gym.Env):
 
         lin_vel_body = r_inv.apply(lin_vel)
 
-        state_vec = np.concatenate([target_vec_body, quat, lin_vel_body, ang_vel]).astype(np.float32)
+        # STATE AUGMENTATION: Concatenate target vector, orientation, velocities, and previous action
+        state_vec = np.concatenate([target_vec_body, quat, lin_vel_body, ang_vel, self.prev_action]).astype(np.float32)
         
         obs = {"state": state_vec, "image": None, "lidar": None}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
