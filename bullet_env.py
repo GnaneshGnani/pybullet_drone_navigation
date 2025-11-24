@@ -171,7 +171,7 @@ class BulletNavigationEnv(gym.Env):
         # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
         # Max speed reduced from 1.0 m/s to 0.5 m/s
         # Max Yaw rate reduced from 1.0 rad/s to 0.5 rad/s
-        action_body = np.array(action[:3]) * 0.57 
+        action_body = np.array(action[:3]) * 0.75 
         target_v_world = r.apply(action_body)
 
         target_yaw_rate = action[3] * 0.75     
@@ -207,8 +207,16 @@ class BulletNavigationEnv(gym.Env):
         
         # Dense Position Reward (REVISED: Steeper gradient near target)
         # Using 2.0 / (1.0 + dist^2) gives a much stronger pull near dist=0
-        dist_reward = 3.0 / (1.0 + dist ** 2) 
-        reward += dist_reward
+        lin_vel_np = np.array(lin_vel)
+        target_vector = self.target_pos - current_pos
+        
+        # Normalize the target vector to get the direction of progress
+        target_dir = target_vector / (dist + 1e-6) 
+        
+        # Reward is the projection of velocity onto the target direction (Dot Product)
+        # Strong multiplier (5.0) ensures this is the dominant reward signal
+        alignment_reward = np.dot(lin_vel_np, target_dir) * 5.0
+        reward += alignment_reward
 
         # Drift Penalty
         reward -= (dist * 0.1)
@@ -220,6 +228,9 @@ class BulletNavigationEnv(gym.Env):
         # Always penalize speed/rotation, but weakly, to promote hovering.
         reward -= (vel_mag * 0.1)  
         reward -= (ang_mag * 0.01) 
+
+        accel_mag = np.linalg.norm(action - self.prev_action)
+        reward -= (accel_mag * 1.0)
         
         terminated = False
         truncated = False
