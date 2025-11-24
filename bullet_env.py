@@ -215,7 +215,7 @@ class BulletNavigationEnv(gym.Env):
         
         # Reward is the projection of velocity onto the target direction (Dot Product)
         # Strong multiplier (5.0) ensures this is the dominant reward signal
-        alignment_reward = np.dot(lin_vel_np, target_dir) * 5.0
+        alignment_reward = np.dot(lin_vel_np, target_dir) * 10.0
         reward += alignment_reward
 
         # Drift Penalty
