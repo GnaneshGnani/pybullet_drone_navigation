@@ -76,8 +76,8 @@ class BulletNavigationEnv(gym.Env):
 
     def _generate_random_hover_target(self, altitude = 1.0):
         # Generate a random horizontal offset for the hover point (e.g., 2m box)
-        random_x = np.random.uniform(-1.0, 1.0)
-        random_y = np.random.uniform(-1.0, 1.0)
+        random_x = np.random.uniform(-0.25, 0.25)
+        random_y = np.random.uniform(-0.25, 0.25)
         
         # Create a new list of 1000 identical waypoints at the new random location
         new_waypoints = [np.array([random_x, random_y, altitude]) for _ in range(1000)]
