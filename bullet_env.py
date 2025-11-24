@@ -180,7 +180,7 @@ class BulletNavigationEnv(gym.Env):
 
         # Drift Penalty
         # This forces the net reward to be negative if the drone is too far
-        reward -= (dist * 0.5)
+        reward -= (dist * 0.1)
         
         # Variable Stability Penalty
         # We want the penalty to be HIGH when close (dist -> 0)
@@ -188,14 +188,16 @@ class BulletNavigationEnv(gym.Env):
         vel_mag = np.linalg.norm(lin_vel)
         ang_mag = np.linalg.norm(ang_vel)
         
-        # This factor is ~1.0 when close, and ~0.0 when far
-        closeness_factor = 1.0 / (1.0 + (dist ** 2))
+        # This factor is ~0.0 when close, and ~1.0 when far
+        # This ensures a high velocity/angular penalty ONLY when far from the target.
+        # When close, the factor is near 0, rewarding a smooth, stable hover.
+        distance_factor = (dist ** 2) / (1.0 + (dist ** 2))
         
         # Penalty scales with closeness. 
         # If far: penalty is small (allowed to fly fast).
         # If close: penalty is high (must stop).
-        reward -= (vel_mag * 0.5 * closeness_factor)
-        reward -= (ang_mag * 0.05 * closeness_factor)
+        reward -= (vel_mag * 0.5 * distance_factor)
+        reward -= (ang_mag * 0.05 * distance_factor)
         
         terminated = False
         truncated = False
