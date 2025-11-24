@@ -214,7 +214,6 @@ class BulletNavigationEnv(gym.Env):
             terminated = True
 
         if dist < self.waypoint_threshold:
-            print(dist, self.waypoint_threshold)
             reward += self.waypoint_bonus
             if vel_mag < 0.2:
                 print("Velocity Reward")
@@ -233,7 +232,7 @@ class BulletNavigationEnv(gym.Env):
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
         if current_pos[2] < 0.05: 
-            print("Hit the Ground!", current_pos)
+            print("Hit the Ground!")
             # reward += self.crash_penalty
             terminated = True
             

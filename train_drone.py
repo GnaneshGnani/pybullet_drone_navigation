@@ -147,18 +147,18 @@ def main():
         json.dump(vars(args), f, indent = 4)
 
     if not args.no_logging:
-        print(f"--- Initializing ClearML: {args.project_name} | {args.task_name} ---")
+        print(f"Initializing ClearML: {args.project_name} | {args.task_name}")
         task = Task.init(project_name = args.project_name, task_name = final_run_name)
         task.connect(args) 
         logger = task.get_logger()
 
     else:
-        print("--- Logging DISABLED (Local Run) ---")
+        print("Logging Disabled")
         logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
 
     wpm = WaypointManager()
     
-    print(f"--- Configuring Task: {args.task.upper()} ---")
+    print(f"Configuring Task: {args.task.upper()}")
     if args.task == "hover":
         waypoints = wpm.generate_hover_target(altitude = 1.0)
         args.max_dist_from_target = 3.0 
@@ -195,7 +195,7 @@ def main():
     # Transfer Learning
     if args.load_model:
         if os.path.exists(args.load_model):
-            print(f"LOADING WEIGHTS FROM: {args.load_model}")
+            print(f"Loading weights from: {args.load_model}")
             try:
                 agent.load_models(args.load_model)
                 print("Models loaded successfully. Continuing training...")
@@ -220,12 +220,21 @@ def main():
             avg_reward = np.mean(reward_window)
 
             logger.report_scalar(title = "Training", series = "Reward", value = float(reward), iteration = episode)
-            logger.report_scalar(title = "Training", series = "Avg Reward", value = float(avg_reward), iteration = episode)
-            logger.report_scalar(title = "Performance", series = "Completion %", value = float((info["waypoints_reached"] / info.get("total_waypoints", 1)) * 100), iteration = episode)
+            logger.report_scalar(title = "Training", series = "Avg Reward (50 ep)", value = float(avg_reward), iteration = episode)
+            logger.report_scalar(title = "Training", series = "Episode Length", value = int(length), iteration = episode)
             
+            wps_reached = info.get("waypoints_reached", 0)
+            total_wps = info.get("total_waypoints", 1)
+            
+            logger.report_scalar(title = "Performance", series = "Waypoints Reached", value = int(wps_reached), iteration = episode)
+            logger.report_scalar(title = "Performance", series = "Completion %", value = float((wps_reached / total_wps) * 100), iteration = episode)
+            
+            dist_val = info.get("dist_to_current_target", 0)
+            logger.report_scalar(title = "Debug", series = "Final Dist to Target", value = float(dist_val), iteration = episode)
+
             for key, val in metrics.items():
                 logger.report_scalar(title = "Loss", series = key, value = float(val), iteration = episode)
-            
+
             print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
             
             logger.flush()
