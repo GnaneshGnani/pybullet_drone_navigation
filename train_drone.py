@@ -30,7 +30,7 @@ def parse_args():
     # Training Params
     parser.add_argument("--episodes", type = int, default = 2000)
     parser.add_argument("--algo", type = str, default = "sac", choices = ["sac", "ppo", "ddpg"])
-    parser.add_argument("--max_steps", type = int, default = 3000)
+    parser.add_argument("--max_steps", type = int, default = 1000)
     parser.add_argument("--batch_size", type = int, default = 64)
     parser.add_argument("--buffer_size", type = int, default = 50000)
     parser.add_argument("--actor_lr", type = float, default = 3e-4)
@@ -47,10 +47,10 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--waypoint_bonus", type = float, default = 25.0)
-    parser.add_argument("--crash_penalty", type = float, default = -50.0)
+    parser.add_argument("--waypoint_bonus", type = float, default = 10.0)
+    parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = 0)
+    parser.add_argument("--per_step_penalty", type = float, default = -0.1)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.5)
     parser.add_argument("--max_dist_from_target", type = float, default = 5.0)
 
@@ -104,7 +104,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
                     loss_metrics["critic_loss"].append(losses[1])
                     loss_metrics["alpha_loss"].append(losses[2])
                     loss_metrics["total_loss"].append(sum(losses))
-                    
+
                 elif len(losses) == 2: # DDPG
                     loss_metrics["actor_loss"].append(losses[0])
                     loss_metrics["critic_loss"].append(losses[1])
@@ -213,6 +213,8 @@ def main():
     try:
         for episode in range(args.episodes):
             reward, length, metrics, info = run_one_episode(env, agent, args.max_steps, args.algo, not args.headless)
+
+            if (length + 1) == args.max_steps: print("Max Steps!")
 
             reward_window.append(reward)
             avg_reward = np.mean(reward_window)

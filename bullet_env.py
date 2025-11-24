@@ -2,6 +2,7 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import gymnasium as gym
+from scipy.spatial.transform import Rotation as R
 
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
@@ -49,7 +50,7 @@ class BulletNavigationEnv(gym.Env):
         # Action Space
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
-        self.state_dim = 16
+        self.state_dim = 13
         self.lidar_rays = 360
 
         obs_spaces = {
@@ -79,6 +80,8 @@ class BulletNavigationEnv(gym.Env):
 
         if self.use_obstacles:
             self._spawn_obstacles()
+
+        self.ctrl.reset()
 
         return self._get_observation(), {}
 
@@ -131,10 +134,14 @@ class BulletNavigationEnv(gym.Env):
         pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         
+        r = R.from_quat(quat)
+
         # Map Action [-1, 1] to Target Velocities
         # Speed limit: +/- 1.0 m/s
         # Yaw rate: +/- 1.0 rad/s
-        target_v = np.array(action[:3]) * 2.0  
+        action_body = np.array(action[:3]) * 1.0 # Max speed 1.0 m/s
+        target_v_world = r.apply(action_body)
+
         target_yaw_rate = action[3] * 1.0      
 
         # Compute RPMs using DSLPIDControl
@@ -149,7 +156,7 @@ class BulletNavigationEnv(gym.Env):
             cur_ang_vel = np.array(ang_vel),
 
             target_pos = np.array(pos), # Keep current pos target to force velocity tracking
-            target_vel = target_v,
+            target_vel = target_v_world,
 
             target_rpy = np.array([0, 0, 0]),
             target_rpy_rates = np.array([0, 0, target_yaw_rate])
@@ -162,28 +169,57 @@ class BulletNavigationEnv(gym.Env):
         reward = 0
         reward += self.per_step_penalty
         
-        current_pos = obs["state"][:3]
+        current_pos = np.array(pos)
         dist = np.linalg.norm(current_pos - self.target_pos)
-        
-        reward += (self.prev_dist - dist) * 10.0
         self.prev_dist = dist
+        
+        # Dense Position Reward (Always positive gradient towards target)
+        # Using 1/(1 + dist) creates a smooth curve from 0 (far) to 1 (at target)
+        dist_reward = 1.0 / (1.0 + dist * 0.5) 
+        reward += dist_reward
 
-        ang_vel = obs["state"][10:13]
-        reward -= np.linalg.norm(ang_vel) * 0.05
-        reward -= np.linalg.norm(action[ : 3]) * 0.1
+        # Drift Penalty
+        # This forces the net reward to be negative if the drone is too far
+        reward -= (dist * 0.5)
+        
+        # Variable Stability Penalty
+        # We want the penalty to be HIGH when close (dist -> 0)
+        # and LOW when far (dist -> inf).
+        vel_mag = np.linalg.norm(lin_vel)
+        ang_mag = np.linalg.norm(ang_vel)
+        
+        # This factor is ~1.0 when close, and ~0.0 when far
+        closeness_factor = 1.0 / (1.0 + (dist ** 2))
+        
+        # Penalty scales with closeness. 
+        # If far: penalty is small (allowed to fly fast).
+        # If close: penalty is high (must stop).
+        reward -= (vel_mag * 0.5 * closeness_factor)
+        reward -= (ang_mag * 0.05 * closeness_factor)
         
         terminated = False
         truncated = False
 
+        contact_points = p.getContactPoints(bodyA=self.env.DRONE_IDS[0], physicsClientId=self.env.CLIENT)
+        
+        # If the list is not empty, we hit something (Floor or Obstacle)
+        if len(contact_points) > 0:
+            print("Crashed!")
+            reward += self.crash_penalty
+            terminated = True
+
         if dist > self.max_dist_from_target:
+            print("Timeout!", dist, self.max_dist_from_target)
             reward += self.timeout_penalty
             terminated = True
 
         if dist < self.waypoint_threshold:
-            # If dist = threshold, scale = 1.0 -> Reward = Bonus
-            # If dist = 0, scale = 2.0 -> Reward = 2 * Bonus
-            precision_scale = 2.0 - (dist / self.waypoint_threshold)
-            reward += self.waypoint_bonus * precision_scale
+            print(dist, self.waypoint_threshold)
+            reward += self.waypoint_bonus
+            if vel_mag < 0.2:
+                print("Velocity Reward")
+                reward += 20.0
+
             self.current_wp_idx += 1
 
             if self.current_wp_idx >= len(self.waypoints):
@@ -196,12 +232,14 @@ class BulletNavigationEnv(gym.Env):
                 current_pos = obs["state"][:3]
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
-        if current_pos[2] < 0.1: 
-            reward += self.crash_penalty
+        if current_pos[2] < 0.05: 
+            print("Hit the Ground!", current_pos)
+            # reward += self.crash_penalty
             terminated = True
             
-        if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 20:
-            reward += self.crash_penalty
+        if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
+            print("Out of Boundary!")
+            # reward += self.crash_penalty
             terminated = True
 
         info = {
@@ -223,9 +261,16 @@ class BulletNavigationEnv(gym.Env):
         quat = np.array(quat)
         lin_vel = np.array(lin_vel)
         ang_vel = np.array(ang_vel)
+
+        r = R.from_quat(quat)
+        r_inv = r.inv()
         
-        target_vec = self.target_pos - pos
-        state_vec = np.concatenate([pos, quat, lin_vel, ang_vel, target_vec]).astype(np.float32)
+        target_vec_world = self.target_pos - pos
+        target_vec_body = r_inv.apply(target_vec_world)
+
+        lin_vel_body = r_inv.apply(lin_vel)
+
+        state_vec = np.concatenate([target_vec_body, quat, lin_vel_body, ang_vel]).astype(np.float32)
         
         obs = {"state": state_vec, "image": None, "lidar": None}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)

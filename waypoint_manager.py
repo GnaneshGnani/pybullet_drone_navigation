@@ -17,9 +17,9 @@ class WaypointManager:
         self.waypoints = []
         self.visual_ids = []
 
-    def generate_hover_target(self, altitude = 1.0):
+    def generate_hover_target(self, altitude = 1.5):
         self.clear_waypoints()
-        
+
         # We add the same point multiple times so the episode doesn't end 
         # instantly when the drone reaches it. It has to STAY there.
         for _ in range(1000): 
