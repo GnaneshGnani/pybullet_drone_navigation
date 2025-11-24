@@ -18,7 +18,7 @@ class WaypointManager:
         self.waypoints = []
         self.visual_ids = []
 
-    def generate_square_path(self, side_length = 10, altitude = 2.5):
+    def generate_square_path(self, side_length = 10, altitude = 1.5):
         self.clear_waypoints()
         half = side_length / 2
 

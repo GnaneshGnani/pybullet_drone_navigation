@@ -124,13 +124,42 @@ class BulletNavigationEnv(gym.Env):
                 p.loadURDF("cube.urdf", [x, y, z], globalScaling = 0.6, physicsClientId = self.env.CLIENT)
 
     def step(self, action):
-        hover_rpm = 31700
-        thrust = action[3]
-        base_rpm = hover_rpm + (thrust * 4000)
+        hover_rpm = 14500
+
+        roll_cmd = action[0]   # -1 to 1
+        pitch_cmd = action[1]  # -1 to 1
+        yaw_cmd = action[2]    # -1 to 1
+        thrust_cmd = action[3] # -1 to 1
+
+        thrust_offset = thrust_cmd * 4000  # Scale thrust command
+        base_rpm = hover_rpm + thrust_offset
+
+        # Control authority (how much each command affects motors)
+        roll_authority = 2000
+        pitch_authority = 2000
+        yaw_authority = 1000
+
+        # CF2X motor layout (X configuration):
+        #     Front
+        #   3     0
+        #     \ /
+        #     / \
+        #   2     1
+        #     Back
+        #
+        # Motor spin directions (for yaw):
+
+        r = roll_cmd * roll_authority
+        p = -pitch_cmd * pitch_authority
+        y = yaw_cmd * yaw_authority
+
+        rpm_0 = base_rpm - r + p - y
+        rpm_1 = base_rpm - r - p + y
+        rpm_2 = base_rpm + r - p - y
+        rpm_3 = base_rpm + r + p + y
         
-        mix_matrix = np.array([[1, -1, -1], [-1, -1, 1], [-1, 1, -1], [1, 1, 1]])
-        mix = mix_matrix @ action[:3]
-        pwms = np.clip(base_rpm + mix * 1500, 0, 60000)
+        pwms = np.array([rpm_0, rpm_1, rpm_2, rpm_3])
+        pwms = np.clip(pwms, 0, 60000)
         
         self.env.step(pwms.reshape(1, 4))
         
