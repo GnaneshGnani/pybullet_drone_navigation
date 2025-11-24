@@ -5,6 +5,7 @@ import gymnasium as gym
 
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class BulletNavigationEnv(gym.Env):
     def __init__(self, waypoints, use_camera = False, use_depth = False, use_lidar = False, 
@@ -32,7 +33,7 @@ class BulletNavigationEnv(gym.Env):
         self.marker_ids = [] 
         self.debug_line_ids = []
 
-        # PyBullet Drone Init (Using CtrlAviary for correct physics stepping)
+        # PyBullet Drone Init
         self.env = CtrlAviary(
             drone_model = DroneModel.CF2X,
             num_drones = 1,
@@ -40,10 +41,13 @@ class BulletNavigationEnv(gym.Env):
             physics = Physics.PYB,
             gui = gui,
             pyb_freq = 240,
-            ctrl_freq = 240 #48
+            ctrl_freq = 240 
         )
+
+        self.ctrl = DSLPIDControl(drone_model = DroneModel.CF2X)
         
-        # Action & Observation Spaces
+        # Action Space
+        # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
         self.state_dim = 16
         self.lidar_rays = 360
@@ -91,8 +95,8 @@ class BulletNavigationEnv(gym.Env):
 
                 visual_shape_id = p.createVisualShape(
                     shapeType = p.GEOM_SPHERE,
-                    radius = 0.1,             # Slightly larger to be visible
-                    rgbaColor = [0, 1, 0, 1], # Green
+                    radius = 0.1,
+                    rgbaColor = [0, 1, 0, 1],
                     physicsClientId = self.env.CLIENT
                 )
                 
@@ -108,7 +112,7 @@ class BulletNavigationEnv(gym.Env):
                     line_id = p.addUserDebugLine(
                         lineFromXYZ = wp,
                         lineToXYZ = next_wp,
-                        lineColorRGB = [1, 0, 0], # Red
+                        lineColorRGB = [1, 0, 0],
                         lineWidth = 3.0,
                         physicsClientId = self.env.CLIENT
                     )
@@ -123,47 +127,37 @@ class BulletNavigationEnv(gym.Env):
             if np.linalg.norm([x, y]) > 1.0:
                 p.loadURDF("cube.urdf", [x, y, z], globalScaling = 0.6, physicsClientId = self.env.CLIENT)
 
-    def step(self, action):
-        hover_rpm = 14500
-
-        roll_cmd = action[0]   # -1 to 1
-        pitch_cmd = action[1]  # -1 to 1
-        yaw_cmd = action[2]    # -1 to 1
-        thrust_cmd = action[3] # -1 to 1
-
-        thrust_offset = thrust_cmd * 4000  # Scale thrust command
-        base_rpm = hover_rpm + thrust_offset
-
-        # Control authority (how much each command affects motors)
-        roll_authority = 2000
-        pitch_authority = 2000
-        yaw_authority = 1000
-
-        # CF2X motor layout (X configuration):
-        #     Front
-        #   3     0
-        #     \ /
-        #     / \
-        #   2     1
-        #     Back
-        #
-        # Motor spin directions (for yaw):
-
-        r = roll_cmd * roll_authority
-        p = -pitch_cmd * pitch_authority
-        y = yaw_cmd * yaw_authority
-
-        rpm_0 = base_rpm - r + p - y
-        rpm_1 = base_rpm - r - p + y
-        rpm_2 = base_rpm + r - p - y
-        rpm_3 = base_rpm + r + p + y
+    def step(self, action):        
+        pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
+        lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         
-        pwms = np.array([rpm_0, rpm_1, rpm_2, rpm_3])
-        pwms = np.clip(pwms, 0, 60000)
+        # Map Action [-1, 1] to Target Velocities
+        # Speed limit: +/- 1.0 m/s
+        # Yaw rate: +/- 1.0 rad/s
+        target_v = np.array(action[:3]) * 2.0  
+        target_yaw_rate = action[3] * 1.0      
+
+        # Compute RPMs using DSLPIDControl
+        # We pass `target_pos = pos` because we are doing VELOCITY control.
+        # The PID controller will try to match `target_v`.
+        rpm, _, _ = self.ctrl.computeControl(
+            control_timestep = 1.0 / self.env.CTRL_FREQ,
+
+            cur_pos = np.array(pos),
+            cur_quat = np.array(quat),
+            cur_vel = np.array(lin_vel),
+            cur_ang_vel = np.array(ang_vel),
+
+            target_pos = np.array(pos), # Keep current pos target to force velocity tracking
+            target_vel = target_v,
+
+            target_rpy = np.array([0, 0, 0]),
+            target_rpy_rates = np.array([0, 0, target_yaw_rate])
+        )
         
-        self.env.step(pwms.reshape(1, 4))
+        # 4. Step the environment with calculated RPMs
+        self.env.step(rpm.reshape(1, 4))
         
-        # 2. Get Obs & Reward
         obs = self._get_observation()
         reward = self.per_step_penalty
         
@@ -173,25 +167,22 @@ class BulletNavigationEnv(gym.Env):
         reward += (self.prev_dist - dist) * 10.0
         self.prev_dist = dist
 
-        ang_vel = obs["state"][10 : 13]
-        # Penalize high angular velocity to prevent spinning/tumbling
+        ang_vel = obs["state"][10:13]
         reward -= np.linalg.norm(ang_vel) * 0.05
-        
-        # Penalize erratic control inputs (optional, helps smoothness)
-        reward -= np.linalg.norm(action[:3]) * 0.1
+        reward -= np.linalg.norm(action[ : 3]) * 0.1
         
         terminated = False
         truncated = False
 
-        # Terminate if too far from the CURRENT target waypoint
         if dist > self.max_dist_from_target:
-            reward -=  self.timeout_penalty
+            reward -= self.timeout_penalty
             terminated = True
 
         if dist < self.waypoint_threshold:
-            reward +=  self.waypoint_bonus
-            self.current_wp_idx +=  1
-            if self.current_wp_idx >=  len(self.waypoints):
+            reward += self.waypoint_bonus
+            self.current_wp_idx += 1
+
+            if self.current_wp_idx >= len(self.waypoints):
                 print("--- Course Complete! ---")
                 terminated = True
 
