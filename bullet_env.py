@@ -136,6 +136,8 @@ class BulletNavigationEnv(gym.Env):
                 )
                 
                 body_id = p.createMultiBody(
+                    baseMass = 0,
+                    baseCollisionShapeIndex = -1, # No Collision Shape
                     baseVisualShapeIndex = visual_shape_id,
                     basePosition = wp,
                     physicsClientId = self.env.CLIENT
@@ -199,7 +201,7 @@ class BulletNavigationEnv(gym.Env):
         reward = 0
         
         # Per-Step Penalty (REVISED: Milder penalty for smoother flight preference)
-        reward += (self.per_step_penalty * 0.1) # e.g., -0.01 instead of -0.1
+        reward += (self.per_step_penalty) # e.g., -0.01 instead of -0.1
         
         current_pos = np.array(pos)
         dist = np.linalg.norm(current_pos - self.target_pos)
@@ -215,11 +217,11 @@ class BulletNavigationEnv(gym.Env):
         
         # Reward is the projection of velocity onto the target direction (Dot Product)
         # Strong multiplier (5.0) ensures this is the dominant reward signal
-        alignment_reward = np.dot(lin_vel_np, target_dir) * 10.0
+        alignment_reward = np.dot(lin_vel_np, target_dir)
         reward += alignment_reward
 
         # Drift Penalty
-        reward -= (dist * 0.1)
+        reward -= (dist * 0.5)
         
         # Stability Penalty (REVISED: Simple, constant, and low-magnitude penalty for ALL movement)
         vel_mag = np.linalg.norm(lin_vel)
@@ -229,8 +231,8 @@ class BulletNavigationEnv(gym.Env):
         reward -= (vel_mag * 0.1)  
         reward -= (ang_mag * 0.01) 
 
-        accel_mag = np.linalg.norm(action - self.prev_action)
-        reward -= (accel_mag * 1.0)
+        # accel_mag = np.linalg.norm(action - self.prev_action)
+        # reward -= (accel_mag * 1.0)
         
         terminated = False
         truncated = False
@@ -269,9 +271,9 @@ class BulletNavigationEnv(gym.Env):
                 current_pos = obs["state"][:3]
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
-        if current_pos[2] < 0.05: 
-            print("Hit the Ground!")
-            terminated = True
+        # if current_pos[2] < 0.05: 
+        #     print("Hit the Ground!")
+        #     terminated = True
             
         if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
             print("Out of Boundary!")
