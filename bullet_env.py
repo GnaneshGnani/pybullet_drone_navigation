@@ -206,30 +206,25 @@ class BulletNavigationEnv(gym.Env):
         current_pos = np.array(pos)
         dist = np.linalg.norm(current_pos - self.target_pos)
         self.prev_dist = dist
-        
-        # Dense Position Reward (REVISED: Steeper gradient near target)
-        # Using 2.0 / (1.0 + dist^2) gives a much stronger pull near dist=0
-        lin_vel_np = np.array(lin_vel)
-        target_vector = self.target_pos - current_pos
-        
-        # Normalize the target vector to get the direction of progress
-        target_dir = target_vector / (dist + 1e-6) 
-        
-        # Reward is the projection of velocity onto the target direction (Dot Product)
-        # Strong multiplier (5.0) ensures this is the dominant reward signal
-        alignment_reward = np.dot(lin_vel_np, target_dir)
-        reward += alignment_reward
 
-        # Drift Penalty
-        reward -= (dist * 0.5)
-        
-        # Stability Penalty (REVISED: Simple, constant, and low-magnitude penalty for ALL movement)
+        lin_vel_np = np.array(lin_vel)
         vel_mag = np.linalg.norm(lin_vel)
         ang_mag = np.linalg.norm(ang_vel)
-        
-        # Always penalize speed/rotation, but weakly, to promote hovering.
-        reward -= (vel_mag * 0.1)  
-        reward -= (ang_mag * 0.01) 
+
+        distance_reward = np.exp(-2.0 * dist)  # 1.0 at target, drops to ~0.14 at 1m
+        reward += distance_reward * 5.0
+
+        desired_speed = max(0.1, dist * 0.5)  # Want slower speed when closer
+        speed_error = abs(vel_mag - desired_speed)
+        reward -= speed_error * 0.5
+
+        if dist > 0.1:  # Avoid division by zero
+            target_dir = (self.target_pos - current_pos) / dist
+            velocity_dir = lin_vel_np / (vel_mag + 1e-6)
+            alignment = np.dot(velocity_dir, target_dir)
+
+            if vel_mag > 0.05 and dist > 0.5:
+                reward += alignment * 2.0
 
         # accel_mag = np.linalg.norm(action - self.prev_action)
         # reward -= (accel_mag * 1.0)
@@ -254,15 +249,22 @@ class BulletNavigationEnv(gym.Env):
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
             
-            # Massive stability bonus for being stable inside the target area
-            if vel_mag < 0.2:
-                print("Velocity Reward")
-                reward += 200.0 # Increased stability bonus
+            stillness = np.exp(-5.0 * vel_mag)  # 1.0 when still, drops quickly
+            reward += stillness * 10.0
+            
+            # Angular stability
+            ang_stillness = np.exp(-10.0 * ang_mag)
+            reward += ang_stillness * 5.0
+            
+            # Big bonus for being very stable
+            if vel_mag < 0.1 and ang_mag < 0.1:
+                reward += 50.0
 
             self.current_wp_idx += 1
 
             if self.current_wp_idx >= len(self.waypoints):
                 print("--- Course Complete! ---")
+                reward += 200.0
                 terminated = True
 
             else:
