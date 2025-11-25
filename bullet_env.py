@@ -56,7 +56,7 @@ class BulletNavigationEnv(gym.Env):
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
         
-        self.state_dim = 22
+        self.state_dim = 17
         self.lidar_rays = 360
 
         obs_spaces = {
@@ -198,54 +198,53 @@ class BulletNavigationEnv(gym.Env):
         # - At dist = 0, reward is +3.0
         # - At dist = 1m, reward drops significantly
         # This creates a "gravity well" around the waypoint.
-        distance_reward = 3.0 * np.exp(-0.5 * dist**2)
+        # distance_reward = 3.0 * np.exp(-0.5 * dist ** 2)
+        distance_reward = (self.prev_dist - dist) * 10.0
         reward += distance_reward
 
         # Penalize the CHANGE in action (Jerk). 
         # If the drone twitches (changes action from 0.1 to 0.9), this penalty is high.
-        diff_action = action - self.prev_action
-        smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
-        reward += smooth_reward
+        # diff_action = action - self.prev_action
+        # smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
+        # reward += smooth_reward
 
         # We want the drone to be still (hovering) when it arrives.
         # We penalize high speeds, but we scale it by proximity.
         # (It's okay to move fast if you are far away, but you must stop when close).
         # This prevents the drone from just flying continuously through the point.
-        high_speed_reward = -0.1 * np.linalg.norm(lin_vel) ** 2
-        high_speed_reward += -0.1 * np.linalg.norm(ang_vel) ** 2
+        high_speed_reward = -0.05 * np.linalg.norm(lin_vel) ** 2
+        high_speed_reward += -0.05 * np.linalg.norm(ang_vel) ** 2
         reward += high_speed_reward
 
         # If you care about facing a specific direction:
         # Convert quat to Euler to get Yaw
-        euler = p.getEulerFromQuaternion(quat)
-        current_yaw = euler[2]
+        # euler = p.getEulerFromQuaternion(quat)
+        # current_yaw = euler[2]
         
-        delta_x = self.target_pos[0] - current_pos[0]
-        delta_y = self.target_pos[1] - current_pos[1]
+        # delta_x = self.target_pos[0] - current_pos[0]
+        # delta_y = self.target_pos[1] - current_pos[1]
 
         # Compute the angle (yaw) required to face that point
         # atan2 handles the quadrants correctly (-pi to +pi)
-        if np.linalg.norm([delta_x, delta_y]) > 0.1:
-            desired_yaw = np.arctan2(delta_y, delta_x)
-        else:
-            # If we are effectively AT the target, keep the current heading
-            # so the drone doesn't spin wildly trying to face itself.
-            desired_yaw = current_yaw
-        # Calculate shortest angular distance (-pi to pi)
-        yaw_error = (current_yaw - desired_yaw + np.pi) % (2 * np.pi) - np.pi
-        orientation_reward = -0.1 * abs(yaw_error)
-        reward += orientation_reward
+        # if np.linalg.norm([delta_x, delta_y]) > 0.1:
+        #     desired_yaw = np.arctan2(delta_y, delta_x)
+        # else:
+        #     # If we are effectively AT the target, keep the current heading
+        #     # so the drone doesn't spin wildly trying to face itself.
+        #     desired_yaw = current_yaw
+        # # Calculate shortest angular distance (-pi to pi)
+        # yaw_error = (current_yaw - desired_yaw + np.pi) % (2 * np.pi) - np.pi
+        # orientation_reward = -0.1 * abs(yaw_error)
+        # reward += orientation_reward
 
         # Discourage maximizing motors if not necessary (prevents saturation)
-        energy_reward = -0.05 * np.linalg.norm(action) ** 2
-        reward += energy_reward
+        # energy_reward = -0.05 * np.linalg.norm(action) ** 2
+        # reward += energy_reward
         
         terminated = False
         truncated = False
 
         contact_points = p.getContactPoints(bodyA=self.env.DRONE_IDS[0], physicsClientId=self.env.CLIENT)
-        
-        # If the list is not empty, we hit something (Floor or Obstacle)
         if len(contact_points) > 0:
             print("Crashed!")
             reward += self.crash_penalty
@@ -307,18 +306,17 @@ class BulletNavigationEnv(gym.Env):
         target_vec_world = self.target_pos - pos
         target_vec_body = r_inv.apply(target_vec_world)
 
-        lin_vel_body = r_inv.apply(lin_vel) / 5.0
+        lin_vel_body = r_inv.apply(lin_vel)
+        target_vec_scaled = np.clip(target_vec_body, -5.0, 5.0) / 5.0
 
-        target_dist = np.linalg.norm(target_vec_body)
-        if target_dist > 0:
-            target_vec_scaled = np.clip(target_vec_body, -5.0, 5.0) / 5.0
-
-        else:
-            target_vec_scaled = target_vec_body
-
-        rot_mat_flat = rot_mat.flatten()
         # target vector, orientation, velocities, and previous action
-        state_vec = np.concatenate([target_vec_scaled, rot_mat_flat, lin_vel_body, ang_vel, self.prev_action]).astype(np.float32)
+        state_vec = np.concatenate([
+            target_vec_scaled, 
+            quat, 
+            np.clip(lin_vel_body, -5.0, 5.0) / 5.0,
+            np.clip(ang_vel, -10.0, 10.0) / 10.0,
+            self.prev_action
+        ]).astype(np.float32)
         
         obs = {"state": state_vec}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)

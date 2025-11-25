@@ -98,7 +98,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
             agent.store(state_vec, img_data, lidar_data, action, reward, terminated, log_prob, value)
         else:
             agent.remember(state_vec, img_data, lidar_data, action, reward, terminated, 
-                           next_obs["state"], next_obs["image"], next_obs["lidar"])
+                           next_obs["state"], next_obs.get("image"), next_obs.get("lidar"))
             
             losses = agent.learn()
             if losses and losses[0] is not None:
@@ -121,7 +121,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
     # End of Episode PPO Update
     if algo == "ppo":
         if terminated: last_value = 0
-        else: _, _, last_value = agent.get_action(obs["state"], img = obs["image"], lidar = obs["lidar"])
+        else: _, _, last_value = agent.get_action(obs["state"], img = obs.get("image"), lidar = obs.get("lidar"))
         
         if len(agent.buffer) >=  agent.batch_size:
             ppo_losses = agent.learn(last_value, terminated)
