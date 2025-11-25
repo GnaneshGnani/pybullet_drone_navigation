@@ -54,7 +54,7 @@ class BulletNavigationEnv(gym.Env):
         
         # Action Space
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
-        self.alpha = 0.15  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
+        self.alpha = 0.1  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
         self.smooth_action = np.zeros(4)
         self.action_limits = np.array(action_limits) if action_limits is not None else np.array([1.0, 1.0, 1.0, 1.0])
 
@@ -194,10 +194,13 @@ class BulletNavigationEnv(gym.Env):
         lin_vel_np = np.array(lin_vel)
 
         obs = self._get_observation()
+
         reward = 0
+        terminated = False
+        truncated = False
         
         # Per-Step Penalty (REVISED: Milder penalty for smoother flight preference)
-        reward += (self.per_step_penalty) # e.g., -0.01 instead of -0.1
+        reward += (self.per_step_penalty)
         
         dist = np.linalg.norm(current_pos - self.target_pos)
         self.prev_dist = dist
@@ -207,22 +210,65 @@ class BulletNavigationEnv(gym.Env):
         # - At dist = 1m, reward drops significantly
         # This creates a "gravity well" around the waypoint.
         # distance_reward = 3.0 * np.exp(-0.5 * dist ** 2)
-        distance_reward = (self.prev_dist - dist) * 10.0
-        reward += distance_reward
+
+        guidance_radius = 2.0 # Make radius larger so it "sees" the gradient earlier
+        
+        if dist < guidance_radius:
+            # Normalize distance (0.0 to 1.0)
+            norm_dist = dist / guidance_radius
+            
+            # We want the reward to be POSITIVE only when very close (e.g., closer than 30% of radius).
+            # We use an Exponential curve. It is flat far away, but spikes near 0.
+            # At dist = 2.0 (Edge): exp(0) - 1 = 0.0
+            # At dist = 0.0 (Center): exp(2) - 1 = ~6.4 (Huge drive to center)
+            
+            reward += 2.0 * (np.exp(2.0 * (1.0 - norm_dist)) - 1.0) / 6.4
+            
+            # Subtract a "Living Cost" so hovering at the edge isn't profitable
+            # If dist > 0.5m, the result below will be negative.
+            reward -= 0.5 
+            
+        else:
+            reward -= 0.5 * dist
+
+        # 3. SYMMETRIC Z-AXIS REWARD (Keep this!)
+        # Helps it find the right altitude
+        z_diff = self.target_pos[2] - current_pos[2]
+        if abs(z_diff) > 0.1:
+            reward += 0.5 * lin_vel[2] * np.sign(z_diff)
+
+        # Height Penalty
+        z_error = abs(current_pos[2] - self.target_pos[2])
+        reward -= 0.5 * z_error
+
+        if dist < self.waypoint_threshold:
+            reward += self.waypoint_bonus
+
+            self.current_wp_idx += 1
+
+            if self.current_wp_idx >= len(self.waypoints):
+                print("--- Course Complete! ---")
+                reward += 100.0
+                terminated = True
+
+            else:
+                self.target_pos = self.waypoints[self.current_wp_idx]
+                print(f"--- Reached Waypoint {self.current_wp_idx} ---")
+                self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
         # Penalize the CHANGE in action (Jerk). 
         # If the drone twitches (changes action from 0.1 to 0.9), this penalty is high.
-        diff_action = action - self.prev_action
-        smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
-        reward += smooth_reward
+        # diff_action = action - self.prev_action
+        # smooth_reward = -0.05 * np.linalg.norm(diff_action) ** 2
+        # reward += smooth_reward
 
         # We want the drone to be still (hovering) when it arrives.
         # We penalize high speeds, but we scale it by proximity.
         # (It's okay to move fast if you are far away, but you must stop when close).
         # This prevents the drone from just flying continuously through the point.
-        high_speed_reward = -0.1 * (np.linalg.norm(lin_vel) ** 2)
-        high_speed_reward += -0.1 * (np.linalg.norm(ang_vel) ** 2)
-        reward += high_speed_reward
+        # high_speed_reward = -0.1 * (np.linalg.norm(lin_vel) ** 2)
+        # high_speed_reward += -0.1 * (np.linalg.norm(ang_vel) ** 2)
+        # reward += high_speed_reward
 
         # If you care about facing a specific direction:
         # Convert quat to Euler to get Yaw
@@ -248,9 +294,6 @@ class BulletNavigationEnv(gym.Env):
         # Discourage maximizing motors if not necessary (prevents saturation)
         # energy_reward = -0.05 * np.linalg.norm(action) ** 2
         # reward += energy_reward
-        
-        terminated = False
-        truncated = False
 
         contact_points = p.getContactPoints(bodyA=self.env.DRONE_IDS[0], physicsClientId=self.env.CLIENT)
         if len(contact_points) > 0:
@@ -262,21 +305,6 @@ class BulletNavigationEnv(gym.Env):
             print("Timeout!")
             reward += self.timeout_penalty
             terminated = True
-
-        if dist < self.waypoint_threshold:
-            reward += self.waypoint_bonus
-
-            self.current_wp_idx += 1
-
-            if self.current_wp_idx >= len(self.waypoints):
-                print("--- Course Complete! ---")
-                reward += 200.0
-                terminated = True
-
-            else:
-                self.target_pos = self.waypoints[self.current_wp_idx]
-                print(f"--- Reached Waypoint {self.current_wp_idx} ---")
-                self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
             
         if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
             print("Out of Boundary!")
@@ -315,14 +343,22 @@ class BulletNavigationEnv(gym.Env):
         target_vec_body = r_inv.apply(target_vec_world)
 
         lin_vel_body = r_inv.apply(lin_vel)
-        target_vec_scaled = np.clip(target_vec_body, -5.0, 5.0) / 5.0
+        target_vec_scaled = np.clip(target_vec_body, -self.max_dist_from_target, self.max_dist_from_target) / self.max_dist_from_target
+
+        # Use clip range of 2.0 (since max speed is ~0.75)
+        # This spreads the data out so the network can "see" speed better
+        lin_vel_scaled = np.clip(lin_vel_body, -2.0, 2.0) / 2.0
+
+        # Use clip range of 3.0 (since max yaw is ~1.0)
+        # 10.0 was way too high; the drone would be spinning out of control at that speed
+        ang_vel_scaled = np.clip(ang_vel, -3.0, 3.0) / 3.0
 
         # target vector, orientation, velocities, and previous action
         state_vec = np.concatenate([
             target_vec_scaled, 
             quat, 
-            np.clip(lin_vel_body, -5.0, 5.0) / 5.0,
-            np.clip(ang_vel, -10.0, 10.0) / 10.0,
+            lin_vel_scaled,
+            ang_vel_scaled  ,
             self.prev_action
         ]).astype(np.float32)
         

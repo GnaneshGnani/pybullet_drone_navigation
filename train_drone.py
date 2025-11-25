@@ -47,11 +47,11 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--waypoint_bonus", type = float, default = 50.0)
-    parser.add_argument("--crash_penalty", type = float, default = -50.0)
+    parser.add_argument("--waypoint_bonus", type = float, default = 10.0)
+    parser.add_argument("--crash_penalty", type = float, default = -10.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = 0.1)
-    parser.add_argument("--waypoint_threshold", type = float, default = 0.5)
+    parser.add_argument("--per_step_penalty", type = float, default = 0.01)
+    parser.add_argument("--waypoint_threshold", type = float, default = 0.25)
     parser.add_argument("--max_dist_from_target", type = float, default = 5.0)
 
     # Logging
@@ -157,7 +157,7 @@ def main():
         print("Logging Disabled")
         logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
     
-    action_limits = [0.75, 0.75, 0.75, 0.25]
+    action_limits = [0.5, 0.5, 1.0, 1.0]
 
     wpm = WaypointManager()
     

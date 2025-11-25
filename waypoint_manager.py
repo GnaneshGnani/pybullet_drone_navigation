@@ -27,7 +27,7 @@ class WaypointManager:
         for _ in range(1000): 
             self.add_waypoint(x, y, altitude)
         
-        print("Wapoint:", x, y, altitude)
+        print("Waypoint:", x, y, altitude)
 
         return self.get_waypoints()
 
