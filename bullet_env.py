@@ -307,7 +307,7 @@ class BulletNavigationEnv(gym.Env):
         target_vec_world = self.target_pos - pos
         target_vec_body = r_inv.apply(target_vec_world)
 
-        lin_vel_body = r_inv.apply(lin_vel)
+        lin_vel_body = r_inv.apply(lin_vel) / 5.0
 
         target_dist = np.linalg.norm(target_vec_body)
         if target_dist > 0:
