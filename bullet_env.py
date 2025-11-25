@@ -15,7 +15,6 @@ class BulletNavigationEnv(gym.Env):
                  max_dist_from_target = 10.0, gui = False, show_waypoints = False):
         
         # Store a copy of the initial waypoints to detect the task type
-        self._initial_waypoints = waypoints
         self.waypoints = waypoints
         
         self.use_camera = use_camera
@@ -48,7 +47,7 @@ class BulletNavigationEnv(gym.Env):
             physics = Physics.PYB,
             gui = gui,
             pyb_freq = 240,
-            ctrl_freq = 240 
+            ctrl_freq = 48 
         )
 
         self.ctrl = DSLPIDControl(drone_model = DroneModel.CF2X)
@@ -57,8 +56,7 @@ class BulletNavigationEnv(gym.Env):
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
         
-        # State Dimension: 13 (Pos/Vel/Quat) + 4 (Prev Action) = 17
-        self.state_dim = 17
+        self.state_dim = 22
         self.lidar_rays = 360
 
         obs_spaces = {
@@ -74,30 +72,9 @@ class BulletNavigationEnv(gym.Env):
         
         self.observation_space = gym.spaces.Dict(obs_spaces)
 
-    def _generate_random_hover_target(self, altitude = 0.75):
-        # Generate a random horizontal offset for the hover point (e.g., 2m box)
-        random_x = np.random.uniform(-0.25, 0.25)
-        random_y = np.random.uniform(-0.25, 0.25)
-        
-        # Create a new list of 1000 identical waypoints at the new random location
-        new_waypoints = [np.array([random_x, random_y, altitude]) for _ in range(1000)]
-        return np.array(new_waypoints)
-
-
     def reset(self, seed = None, options = None):
         self.env.reset()
         
-        # Logic to detect and randomize hover task
-        # If the original waypoints were a long list of the same point (Hover Task)
-        is_fixed_hover = (len(self._initial_waypoints) == 1000 and 
-                          np.allclose(self._initial_waypoints[0], self._initial_waypoints[-1]))
-        
-        if is_fixed_hover:
-            # Randomize the target position for this episode
-            self.waypoints = self._generate_random_hover_target(altitude = self._initial_waypoints[0][2])
-        else:
-            self.waypoints = self._initial_waypoints
-
         if len(self.waypoints) == 0:
             raise ValueError("No waypoints provided.")
         
@@ -167,7 +144,10 @@ class BulletNavigationEnv(gym.Env):
     def step(self, action):        
         pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
-        
+
+        current_pos = np.array(pos)
+        lin_vel_np = np.array(lin_vel)
+
         r = R.from_quat(quat)
 
         # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
@@ -177,17 +157,17 @@ class BulletNavigationEnv(gym.Env):
         target_v_world = r.apply(action_body)
 
         target_yaw_rate = action[3] 
-
+        
         # Compute RPMs using DSLPIDControl
         rpm, _, _ = self.ctrl.computeControl(
             control_timestep = 1.0 / self.env.CTRL_FREQ,
 
-            cur_pos = np.array(pos),
+            cur_pos = current_pos,
             cur_quat = np.array(quat),
-            cur_vel = np.array(lin_vel),
+            cur_vel = lin_vel_np,
             cur_ang_vel = np.array(ang_vel),
 
-            target_pos = np.array(pos), # Keep current pos target to force velocity tracking
+            target_pos = current_pos, # Keep current pos target to force velocity tracking
             target_vel = target_v_world,
 
             target_rpy = np.array([0, 0, 0]),
@@ -196,38 +176,69 @@ class BulletNavigationEnv(gym.Env):
         
         # Step the environment with calculated RPMs
         self.env.step(rpm.reshape(1, 4))
+
+        # OBSERVE & REFRESH STATE (Time t+1)
+        # CRITICAL: We must re-read position to calculate reward for the NEW state
+        pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId=self.env.CLIENT)
+        lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId=self.env.CLIENT)
         
+        current_pos = np.array(pos)
+        lin_vel_np = np.array(lin_vel)
+
         obs = self._get_observation()
         reward = 0
         
         # Per-Step Penalty (REVISED: Milder penalty for smoother flight preference)
         reward += (self.per_step_penalty) # e.g., -0.01 instead of -0.1
         
-        current_pos = np.array(pos)
         dist = np.linalg.norm(current_pos - self.target_pos)
         self.prev_dist = dist
 
-        lin_vel_np = np.array(lin_vel)
-        vel_mag = np.linalg.norm(lin_vel)
-        ang_mag = np.linalg.norm(ang_vel)
+        # We use an exponential curve. 
+        # - At dist = 0, reward is +3.0
+        # - At dist = 1m, reward drops significantly
+        # This creates a "gravity well" around the waypoint.
+        distance_reward = 3.0 * np.exp(-0.5 * dist**2)
+        reward += distance_reward
 
-        distance_reward = np.exp(-2.0 * dist)  # 1.0 at target, drops to ~0.14 at 1m
-        reward += distance_reward * 5.0
+        # Penalize the CHANGE in action (Jerk). 
+        # If the drone twitches (changes action from 0.1 to 0.9), this penalty is high.
+        diff_action = action - self.prev_action
+        smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
+        reward += smooth_reward
 
-        desired_speed = max(0.1, dist * 0.5)  # Want slower speed when closer
-        speed_error = abs(vel_mag - desired_speed)
-        reward -= speed_error * 0.5
+        # We want the drone to be still (hovering) when it arrives.
+        # We penalize high speeds, but we scale it by proximity.
+        # (It's okay to move fast if you are far away, but you must stop when close).
+        # This prevents the drone from just flying continuously through the point.
+        high_speed_reward = -0.1 * np.linalg.norm(lin_vel) ** 2
+        high_speed_reward += -0.1 * np.linalg.norm(ang_vel) ** 2
+        reward += high_speed_reward
 
-        if dist > 0.1:  # Avoid division by zero
-            target_dir = (self.target_pos - current_pos) / dist
-            velocity_dir = lin_vel_np / (vel_mag + 1e-6)
-            alignment = np.dot(velocity_dir, target_dir)
+        # If you care about facing a specific direction:
+        # Convert quat to Euler to get Yaw
+        euler = p.getEulerFromQuaternion(quat)
+        current_yaw = euler[2]
+        
+        delta_x = self.target_pos[0] - current_pos[0]
+        delta_y = self.target_pos[1] - current_pos[1]
 
-            if vel_mag > 0.05 and dist > 0.5:
-                reward += alignment * 2.0
+        # Compute the angle (yaw) required to face that point
+        # atan2 handles the quadrants correctly (-pi to +pi)
+        if np.linalg.norm([delta_x, delta_y]) > 0.1:
+            desired_yaw = np.arctan2(delta_y, delta_x)
+        else:
+            # If we are effectively AT the target, keep the current heading
+            # so the drone doesn't spin wildly trying to face itself.
+            desired_yaw = current_yaw
+        # Calculate shortest angular distance (-pi to pi)
+        yaw_error = (current_yaw - desired_yaw + np.pi) % (2 * np.pi) - np.pi
+        orientation_reward = -0.1 * abs(yaw_error)
+        reward += orientation_reward
 
-        # accel_mag = np.linalg.norm(action - self.prev_action)
-        # reward -= (accel_mag * 1.0)
+        # Discourage maximizing motors if not necessary (prevents saturation)
+        energy_reward = -0.05 * np.linalg.norm(action) ** 2
+        reward += energy_reward
         
         terminated = False
         truncated = False
@@ -237,28 +248,16 @@ class BulletNavigationEnv(gym.Env):
         # If the list is not empty, we hit something (Floor or Obstacle)
         if len(contact_points) > 0:
             print("Crashed!")
-            # Crash Penalty (REVISED: Milder penalty to allow for exploration)
-            reward += (self.crash_penalty / 2) # e.g., -50.0 instead of -100.0
+            reward += self.crash_penalty
             terminated = True
 
         if dist > self.max_dist_from_target:
-            print("Timeout!", dist, self.max_dist_from_target)
+            print("Timeout!")
             reward += self.timeout_penalty
             terminated = True
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
-            
-            stillness = np.exp(-5.0 * vel_mag)  # 1.0 when still, drops quickly
-            reward += stillness * 10.0
-            
-            # Angular stability
-            ang_stillness = np.exp(-10.0 * ang_mag)
-            reward += ang_stillness * 5.0
-            
-            # Big bonus for being very stable
-            if vel_mag < 0.1 and ang_mag < 0.1:
-                reward += 50.0
 
             self.current_wp_idx += 1
 
@@ -270,12 +269,7 @@ class BulletNavigationEnv(gym.Env):
             else:
                 self.target_pos = self.waypoints[self.current_wp_idx]
                 print(f"--- Reached Waypoint {self.current_wp_idx} ---")
-                current_pos = obs["state"][:3]
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
-
-        # if current_pos[2] < 0.05: 
-        #     print("Hit the Ground!")
-        #     terminated = True
             
         if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
             print("Out of Boundary!")
@@ -283,12 +277,14 @@ class BulletNavigationEnv(gym.Env):
 
         # Store the current action for the next time step's observation
         self.prev_action = np.array(action)
+        self.prev_dist = dist
         
         info = {
             "waypoints_reached": self.current_wp_idx,
             "total_waypoints": len(self.waypoints),
             "dist_to_current_target": dist
         }
+
         return obs, reward, terminated, truncated, info
 
     def _get_drone_pos(self):
@@ -306,16 +302,25 @@ class BulletNavigationEnv(gym.Env):
 
         r = R.from_quat(quat)
         r_inv = r.inv()
+        rot_mat = r.as_matrix()
         
         target_vec_world = self.target_pos - pos
         target_vec_body = r_inv.apply(target_vec_world)
 
         lin_vel_body = r_inv.apply(lin_vel)
 
-        # STATE AUGMENTATION: Concatenate target vector, orientation, velocities, and previous action
-        state_vec = np.concatenate([target_vec_body, quat, lin_vel_body, ang_vel, self.prev_action]).astype(np.float32)
+        target_dist = np.linalg.norm(target_vec_body)
+        if target_dist > 0:
+            target_vec_scaled = np.clip(target_vec_body, -5.0, 5.0) / 5.0
+
+        else:
+            target_vec_scaled = target_vec_body
+
+        rot_mat_flat = rot_mat.flatten()
+        # target vector, orientation, velocities, and previous action
+        state_vec = np.concatenate([target_vec_scaled, rot_mat_flat, lin_vel_body, ang_vel, self.prev_action]).astype(np.float32)
         
-        obs = {"state": state_vec, "image": None, "lidar": None}
+        obs = {"state": state_vec}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
 
         if self.use_camera or self.use_depth:

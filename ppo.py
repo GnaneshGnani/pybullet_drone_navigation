@@ -170,7 +170,7 @@ class PPOAgent:
                 # --- Total Loss and Update ---
                 # We can also add an entropy bonus to encourage exploration
                 entropy_loss = dist.entropy().mean()
-                total_loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy_loss
+                total_loss = actor_loss + (0.5 * critic_loss) - (0.01 * entropy_loss)
                 
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()

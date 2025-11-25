@@ -22,8 +22,10 @@ class WaypointManager:
 
         # We add the same point multiple times so the episode doesn't end 
         # instantly when the drone reaches it. It has to STAY there.
+        x = np.random.uniform(-0.5, 0.5)
+        y = np.random.uniform(-0.5, 0.5)
         for _ in range(1000): 
-            self.add_waypoint(0, 0, altitude)
+            self.add_waypoint(x, y, altitude)
 
         return self.get_waypoints()
 
