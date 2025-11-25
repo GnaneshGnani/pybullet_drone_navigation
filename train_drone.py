@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument("--episodes", type = int, default = 2000)
     parser.add_argument("--algo", type = str, default = "sac", choices = ["sac", "ppo", "ddpg"])
     parser.add_argument("--max_steps", type = int, default = 1000)
-    parser.add_argument("--batch_size", type = int, default = 4096)
+    parser.add_argument("--batch_size", type = int, default = 2048)
     parser.add_argument("--buffer_size", type = int, default = 50000)
     parser.add_argument("--actor_lr", type = float, default = 3e-4)
     parser.add_argument("--critic_lr", type = float, default = 1e-3)
@@ -48,7 +48,7 @@ def parse_args():
     
     # Reward Shaping
     parser.add_argument("--waypoint_bonus", type = float, default = 50.0)
-    parser.add_argument("--crash_penalty", type = float, default = -100.0)
+    parser.add_argument("--crash_penalty", type = float, default = -50.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
     parser.add_argument("--per_step_penalty", type = float, default = 0.1)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.5)
@@ -84,9 +84,6 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         else:
             action = agent.get_action(state_vec, img = img_data, lidar = lidar_data)
             log_prob, value = None, None
-        
-        SAFE_SPEED_CLIP = 0.5
-        action = np.clip(action, -SAFE_SPEED_CLIP, SAFE_SPEED_CLIP)
 
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
@@ -124,6 +121,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         else: _, _, last_value = agent.get_action(obs["state"], img = obs.get("image"), lidar = obs.get("lidar"))
         
         if len(agent.buffer) >=  agent.batch_size:
+            print("Training PPO......")
             ppo_losses = agent.learn(last_value, terminated)
             if ppo_losses and ppo_losses[0] is not None:
                 loss_metrics["actor_loss"].append(ppo_losses[0])
@@ -158,6 +156,8 @@ def main():
     else:
         print("Logging Disabled")
         logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
+    
+    action_limits = [0.75, 0.75, 0.75, 0.25]
 
     wpm = WaypointManager()
     
@@ -173,6 +173,7 @@ def main():
         timeout_penalty = args.timeout_penalty,
         per_step_penalty = args.per_step_penalty,
         max_dist_from_target = args.max_dist_from_target,
+        action_limits = action_limits,
         gui = not args.headless,
         show_waypoints = args.visualize
     )
@@ -204,11 +205,11 @@ def main():
         for episode in range(args.episodes):
             print(f"Configuring Task: {args.task.upper()}")
             if args.task == "hover":
-                waypoints = wpm.generate_hover_target(altitude = 1.0)
+                waypoints = wpm.generate_hover_target(altitude = 0.75)
                 args.max_dist_from_target = 3.0 
             
             elif args.task == "square":
-                waypoints = wpm.generate_square_path(side_length = 4.0)
+                waypoints = wpm.generate_square_path(side_length = 1.0, altitude = 1.5)
                 args.max_dist_from_target = 5.0
 
             elif args.task == "random":

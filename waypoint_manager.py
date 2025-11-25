@@ -17,7 +17,7 @@ class WaypointManager:
         self.waypoints = []
         self.visual_ids = []
 
-    def generate_hover_target(self, altitude = 0.75):
+    def generate_hover_target(self, altitude):
         self.clear_waypoints()
 
         # We add the same point multiple times so the episode doesn't end 
@@ -26,10 +26,12 @@ class WaypointManager:
         y = np.random.uniform(-0.5, 0.5)
         for _ in range(1000): 
             self.add_waypoint(x, y, altitude)
+        
+        print("Wapoint:", x, y, altitude)
 
         return self.get_waypoints()
 
-    def generate_square_path(self, side_length = 4.0, altitude = 1.5): 
+    def generate_square_path(self, side_length, altitude): 
         self.clear_waypoints()
         half = side_length / 2
         coords = [

@@ -12,7 +12,7 @@ class BulletNavigationEnv(gym.Env):
     def __init__(self, waypoints, use_camera = False, use_depth = False, use_lidar = False, 
                  use_obstacles = False, waypoint_threshold = 1.0, waypoint_bonus = 100.0,
                  crash_penalty = -100.0, timeout_penalty = -10.0, per_step_penalty = -0.1,
-                 max_dist_from_target = 10.0, gui = False, show_waypoints = False):
+                 max_dist_from_target = 10.0, action_limits = None, gui = False, show_waypoints = False):
         
         # Store a copy of the initial waypoints to detect the task type
         self.waypoints = waypoints
@@ -54,6 +54,10 @@ class BulletNavigationEnv(gym.Env):
         
         # Action Space
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
+        self.alpha = 0.15  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
+        self.smooth_action = np.zeros(4)
+        self.action_limits = np.array(action_limits) if action_limits is not None else np.array([1.0, 1.0, 1.0, 1.0])
+
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
         
         self.state_dim = 17
@@ -83,7 +87,8 @@ class BulletNavigationEnv(gym.Env):
         self.current_wp_idx = 0
         self.target_pos = self.waypoints[self.current_wp_idx]
         self.prev_dist = np.linalg.norm(self._get_drone_pos() - self.target_pos)
-        self.prev_action = np.zeros(4) # Reset previous action
+        self.prev_action = np.zeros(4) 
+        self.smooth_action = np.zeros(4)
         
         if self.use_obstacles:
             self._spawn_obstacles()
@@ -141,7 +146,10 @@ class BulletNavigationEnv(gym.Env):
             if np.linalg.norm([x, y]) > 1.0:
                 p.loadURDF("cube.urdf", [x, y, z], globalScaling = 0.6, physicsClientId = self.env.CLIENT)
 
-    def step(self, action):        
+    def step(self, action):  
+        self.smooth_action = self.alpha * action + (1 - self.alpha) * self.smooth_action    
+        scaled_action = self.smooth_action * self.action_limits
+
         pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
 
@@ -153,10 +161,10 @@ class BulletNavigationEnv(gym.Env):
         # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
         # Max speed reduced from 1.0 m/s to 0.5 m/s
         # Max Yaw rate reduced from 1.0 rad/s to 0.5 rad/s
-        action_body = np.array(action[:3])
+        action_body = np.array(scaled_action[:3])
         target_v_world = r.apply(action_body)
 
-        target_yaw_rate = action[3] 
+        target_yaw_rate = scaled_action[3] 
         
         # Compute RPMs using DSLPIDControl
         rpm, _, _ = self.ctrl.computeControl(
@@ -204,16 +212,16 @@ class BulletNavigationEnv(gym.Env):
 
         # Penalize the CHANGE in action (Jerk). 
         # If the drone twitches (changes action from 0.1 to 0.9), this penalty is high.
-        # diff_action = action - self.prev_action
-        # smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
-        # reward += smooth_reward
+        diff_action = action - self.prev_action
+        smooth_reward = -0.5 * np.linalg.norm(diff_action) ** 2
+        reward += smooth_reward
 
         # We want the drone to be still (hovering) when it arrives.
         # We penalize high speeds, but we scale it by proximity.
         # (It's okay to move fast if you are far away, but you must stop when close).
         # This prevents the drone from just flying continuously through the point.
-        high_speed_reward = -0.05 * np.linalg.norm(lin_vel) ** 2
-        high_speed_reward += -0.05 * np.linalg.norm(ang_vel) ** 2
+        high_speed_reward = -0.1 * (np.linalg.norm(lin_vel) ** 2)
+        high_speed_reward += -0.1 * (np.linalg.norm(ang_vel) ** 2)
         reward += high_speed_reward
 
         # If you care about facing a specific direction:
