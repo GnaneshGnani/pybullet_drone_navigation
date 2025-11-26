@@ -273,7 +273,7 @@ def main():
             
             if avg_reward > best_reward:
                 best_reward = avg_reward
-                print(f"New Best Model Found! Reward: {best_reward:.2f} -> Saving...")
+                print(f"New Best Model Found! Reward: {best_reward:.2f}. Saving...")
                 agent.save_models(best_model_dir) 
 
         print(f"Training Complete. Saving final model to {save_dir}...")
