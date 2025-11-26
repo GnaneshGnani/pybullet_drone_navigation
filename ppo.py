@@ -111,9 +111,15 @@ class PPOAgent:
     def store(self, state, img, lidar, action, reward, done, log_prob, value):
         self.buffer.store(state, img, lidar, action, reward, done, log_prob, value)
 
-    def learn(self, last_value, done):
+    def learn(self, last_value, done, target_kl = 0.015):
         if len(self.buffer) == 0:
             return None, None
+
+        count = 0
+        total_kl = 0
+        total_entropy = 0
+        total_actor_loss = 0
+        total_critic_loss = 0
             
         # Compute advantages and returns
         advantages, returns = self.buffer.compute_advantages_and_returns(last_value, done)
@@ -136,7 +142,7 @@ class PPOAgent:
         
         # Train for n_epochs
         indices = np.arange(len(self.buffer))
-        for _ in range(self.n_epochs):
+        for epoch in range(self.n_epochs):
             np.random.shuffle(indices)
 
             for start in range(0, len(self.buffer), self.batch_size):
@@ -155,6 +161,29 @@ class PPOAgent:
                 # --- Actor Loss ---
                 dist = self.actor(batch_states, b_img, b_lidar)
                 new_log_probs = dist.log_prob(batch_actions).sum(dim = -1)
+
+                entropy = dist.entropy().mean()
+                
+                # --- KL Divergence Check ---
+                with torch.no_grad():
+                    # Calculate how much the policy changed
+                    log_ratio = new_log_probs - batch_old_log_probs
+                    # Approx KL formula: (r - 1) - log(r)
+                    approx_kl = ((torch.exp(log_ratio) - 1) - log_ratio).mean()
+
+                # If policy changed too much, stop immediately to prevent collapse
+                if approx_kl > 1.5 * target_kl:
+                    print(f"KL Spike ({approx_kl:.4f}) detected at epoch {epoch}. Stopping update to prevent collapse.")
+                    self.buffer.clear()
+
+                    # Return current metrics so we can see the spike in logs
+                    return {
+                        "actor_loss": total_actor_loss / max(1, count),
+                        "critic_loss": total_critic_loss / max(1, count),
+                        "entropy": total_entropy / max(1, count),
+                        "kl": total_kl / max(1, count),
+                        "stop_epoch": epoch
+                    }
                 
                 ratio = torch.exp(new_log_probs - batch_old_log_probs)
                 
@@ -183,7 +212,12 @@ class PPOAgent:
 
         self.buffer.clear()
         
-        return np.mean(actor_losses), np.mean(critic_losses)
+        return {
+            "actor_loss": total_actor_loss / max(1, count),
+            "critic_loss": total_critic_loss / max(1, count),
+            "entropy": total_entropy / max(1, count),
+            "kl": total_kl / max(1, count)
+        }
         
     def save_models(self, save_dir):
         torch.save(self.actor.state_dict(), os.path.join(save_dir, "actor.pth"))

@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import torch
 import argparse
 import numpy as np
 
@@ -93,6 +94,7 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         # Store / Learn
         if algo == "ppo":
             agent.store(state_vec, img_data, lidar_data, action, reward, terminated, log_prob, value)
+
         else:
             agent.remember(state_vec, img_data, lidar_data, action, reward, terminated, 
                            next_obs["state"], next_obs.get("image"), next_obs.get("lidar"))
@@ -122,11 +124,11 @@ def run_one_episode(env, agent, max_steps, algo, gui = False):
         
         if len(agent.buffer) >=  agent.batch_size:
             print("Training PPO......")
-            ppo_losses = agent.learn(last_value, terminated)
-            if ppo_losses and ppo_losses[0] is not None:
-                loss_metrics["actor_loss"].append(ppo_losses[0])
-                loss_metrics["critic_loss"].append(ppo_losses[1])
-                loss_metrics["total_loss"].append(sum(ppo_losses))
+            ppo_metrics = agent.learn(last_value, terminated)
+
+            if isinstance(ppo_metrics, dict):
+                for key, value in ppo_metrics.items():
+                    loss_metrics[key].append(value)
     
     avg_metrics = {k: np.mean(v) for k, v in loss_metrics.items() if len(v) > 0}
     return episode_reward, step, avg_metrics, info
@@ -142,7 +144,8 @@ def main():
     
     final_run_name = f"{base_name}_{run_number}"
     save_dir = os.path.join(base_dir, final_run_name)
-    os.makedirs(os.path.join(save_dir, "logs"), exist_ok = True)
+    best_model_dir = os.path.join(save_dir, "best_model")
+    os.makedirs(best_model_dir, exist_ok = True)
 
     with open(os.path.join(save_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent = 4)
@@ -197,9 +200,21 @@ def main():
             
         else:
             print(f"Path {args.load_model} does not exist! Starting from scratch.")
+    
+    schedulers = []
+    schedulers.extend([
+        torch.optim.lr_scheduler.StepLR(agent.actor_optimizer, step_size = 500, gamma = 0.5),
+        torch.optim.lr_scheduler.StepLR(agent.critic_optimizer, step_size = 500, gamma = 0.5),
+    ])
+
+    if args.algo == "sac":
+        schedulers.append(
+            torch.optim.lr_scheduler.StepLR(agent.alpha_optimizer, step_size = 500, gamma = 0.5)
+        )
 
     print(f"Starting Training: {final_run_name}")
     reward_window = deque(maxlen = 50)
+    best_reward = -float('inf')
 
     try:
         for episode in range(args.episodes):
@@ -240,6 +255,14 @@ def main():
 
             for key, val in metrics.items():
                 logger.report_scalar(title = "Loss", series = key, value = float(val), iteration = episode)
+            
+            for scheduler in schedulers:
+                scheduler.step()
+
+            logger.report_scalar(title = "Debug", series = "Actor Learning Rate", value = schedulers[0].get_last_lr()[0], iteration = episode)
+            logger.report_scalar(title = "Debug", series = "Critic Learning Rate", value = schedulers[1].get_last_lr()[0], iteration = episode)
+            if args.algo == "sac":
+                logger.report_scalar(title = "Debug", series = "Alpha Learning Rate", value = schedulers[2].get_last_lr()[0], iteration = episode)
 
             print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
             
@@ -247,6 +270,11 @@ def main():
 
             if episode % args.save_interval == 0:
                 agent.save_models(save_dir)
+            
+            if avg_reward > best_reward:
+                best_reward = avg_reward
+                print(f"New Best Model Found! Reward: {best_reward:.2f} -> Saving...")
+                agent.save_models(best_model_dir) 
 
         print(f"Training Complete. Saving final model to {save_dir}...")
         agent.save_models(save_dir)
