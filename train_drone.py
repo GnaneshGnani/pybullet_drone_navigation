@@ -53,7 +53,7 @@ def parse_args():
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
     parser.add_argument("--per_step_penalty", type = float, default = 0.01)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.25)
-    parser.add_argument("--max_dist_from_target", type = float, default = 5.0)
+    parser.add_argument("--max_dist_from_target", type = float, default = 7.5)
 
     # Logging
     parser.add_argument("--project_name", type = str, default = "PyBullet Training")
