@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--waypoint_bonus", type = float, default = 10.0)
+    parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
     parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
     parser.add_argument("--per_step_penalty", type = float, default = 0.1)

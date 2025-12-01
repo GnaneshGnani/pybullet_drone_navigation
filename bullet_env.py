@@ -206,11 +206,13 @@ class BulletNavigationEnv(gym.Env):
 
         # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
         diff_action = action - self.prev_action
-        reward -= 0.1 * np.linalg.norm(diff_action) ** 2
+        reward -= 0.01 * np.linalg.norm(diff_action) ** 2
 
         # High Velocity Penalty
         reward -= 0.05 * np.linalg.norm(lin_vel) ** 2
-        reward -= 0.01 * np.linalg.norm(ang_vel) ** 2
+        reward -= 0.005 * np.linalg.norm(ang_vel) ** 2
+
+        print(self.per_step_penalty, 30 * progress, -0.01 * np.linalg.norm(diff_action) ** 2, -0.05 * np.linalg.norm(lin_vel) ** 2, -0.005 * np.linalg.norm(ang_vel) ** 2)
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
