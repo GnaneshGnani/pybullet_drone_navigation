@@ -160,7 +160,7 @@ def main():
         print("Logging Disabled")
         logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
     
-    action_limits = [0.5, 0.5, 1.0, 1.0]
+    action_limits = [1.0, 1.0, 1.0, 1.0]
 
     wpm = WaypointManager()
     
@@ -220,12 +220,10 @@ def main():
         for episode in range(args.episodes):
             print(f"Configuring Task: {args.task.upper()}")
             if args.task == "hover":
-                waypoints = wpm.generate_hover_target(altitude = 0.75)
-                args.max_dist_from_target = 3.0 
+                waypoints = wpm.generate_hover_target(altitude = 1.0)
             
             elif args.task == "square":
-                waypoints = wpm.generate_square_path(side_length = 1.0, altitude = 1.5)
-                args.max_dist_from_target = 5.0
+                waypoints = wpm.generate_square_path(side_length = 2.0, altitude = 1.5)
 
             elif args.task == "random":
                 waypoints = wpm.generate_random_walk_path()
@@ -240,8 +238,8 @@ def main():
             reward_window.append(reward)
             avg_reward = np.mean(reward_window)
 
-            logger.report_scalar(title = "Training", series = "Reward", value = float(reward), iteration = episode)
-            logger.report_scalar(title = "Training", series = "Avg Reward (50 ep)", value = float(avg_reward), iteration = episode)
+            logger.report_scalar(title = "Training", series = "Avg Step Reward", value = float(reward) / (length + 1), iteration = episode)
+            logger.report_scalar(title = "Training", series = "Avg Total Reward (50 ep)", value = float(avg_reward), iteration = episode)
             logger.report_scalar(title = "Training", series = "Episode Length", value = int(length), iteration = episode)
             
             wps_reached = info.get("waypoints_reached", 0)

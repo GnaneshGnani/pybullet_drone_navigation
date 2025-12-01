@@ -54,13 +54,13 @@ class BulletNavigationEnv(gym.Env):
         
         # Action Space
         # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
-        self.alpha = 0.1  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
+        self.alpha = 0.75  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
         self.smooth_action = np.zeros(4)
         self.action_limits = np.array(action_limits) if action_limits is not None else np.array([1.0, 1.0, 1.0, 1.0])
 
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
         
-        self.state_dim = 17
+        self.state_dim = 18
         self.lidar_rays = 360
 
         obs_spaces = {
@@ -158,9 +158,6 @@ class BulletNavigationEnv(gym.Env):
 
         r = R.from_quat(quat)
 
-        # Map Action [-1, 1] to Target Velocities (REDUCED MAX SPEED)
-        # Max speed reduced from 1.0 m/s to 0.5 m/s
-        # Max Yaw rate reduced from 1.0 rad/s to 0.5 rad/s
         action_body = np.array(scaled_action[:3])
         target_v_world = r.apply(action_body)
 
@@ -203,47 +200,20 @@ class BulletNavigationEnv(gym.Env):
         reward += (self.per_step_penalty)
         
         dist = np.linalg.norm(current_pos - self.target_pos)
-        self.prev_dist = dist
 
-        # We use an exponential curve. 
-        # - At dist = 0, reward is +3.0
-        # - At dist = 1m, reward drops significantly
-        # This creates a "gravity well" around the waypoint.
-        # distance_reward = 3.0 * np.exp(-0.5 * dist ** 2)
+        progress = self.prev_dist - dist
+        reward += 30.0 * progress
 
-        guidance_radius = 2.0 # Make radius larger so it "sees" the gradient earlier
-        
-        if dist < guidance_radius:
-            # Normalize distance (0.0 to 1.0)
-            norm_dist = dist / guidance_radius
-            
-            # We want the reward to be POSITIVE only when very close (e.g., closer than 30% of radius).
-            # We use an Exponential curve. It is flat far away, but spikes near 0.
-            # At dist = 2.0 (Edge): exp(0) - 1 = 0.0
-            # At dist = 0.0 (Center): exp(2) - 1 = ~6.4 (Huge drive to center)
-            
-            reward += 2.0 * (np.exp(2.0 * (1.0 - norm_dist)) - 1.0) / 6.4
-            
-            # Subtract a "Living Cost" so hovering at the edge isn't profitable
-            # If dist > 0.5m, the result below will be negative.
-            reward -= 0.5 
-            
-        else:
-            reward -= 0.5 * dist
+        # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
+        diff_action = action - self.prev_action
+        reward -= 1.0 * np.linalg.norm(diff_action) ** 2
 
-        # 3. SYMMETRIC Z-AXIS REWARD (Keep this!)
-        # Helps it find the right altitude
-        z_diff = self.target_pos[2] - current_pos[2]
-        if abs(z_diff) > 0.1:
-            reward += 0.5 * lin_vel[2] * np.sign(z_diff)
-
-        # Height Penalty
-        z_error = abs(current_pos[2] - self.target_pos[2])
-        reward -= 0.5 * z_error
+        # High Velocity Penalty
+        reward -= 0.1 * np.linalg.norm(lin_vel) ** 2
+        reward -= 0.1 * np.linalg.norm(ang_vel) ** 2
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
-
             self.current_wp_idx += 1
 
             if self.current_wp_idx >= len(self.waypoints):
@@ -342,8 +312,15 @@ class BulletNavigationEnv(gym.Env):
         target_vec_world = self.target_pos - pos
         target_vec_body = r_inv.apply(target_vec_world)
 
+        dist = np.linalg.norm(target_vec_body)
+        dist_feat = np.log(dist + 1.0)
+
+        if dist > 1e-5:
+            target_direction = target_vec_body / dist
+        else:
+            target_direction = np.zeros(3)
+
         lin_vel_body = r_inv.apply(lin_vel)
-        target_vec_scaled = np.clip(target_vec_body, -self.max_dist_from_target, self.max_dist_from_target) / self.max_dist_from_target
 
         # Use clip range of 2.0 (since max speed is ~0.75)
         # This spreads the data out so the network can "see" speed better
@@ -355,11 +332,12 @@ class BulletNavigationEnv(gym.Env):
 
         # target vector, orientation, velocities, and previous action
         state_vec = np.concatenate([
-            target_vec_scaled, 
-            quat, 
-            lin_vel_scaled,
-            ang_vel_scaled  ,
-            self.prev_action
+            target_direction,    # 3 dims
+            [dist_feat],         # 1 dim
+            quat,                # 4 dims
+            lin_vel_scaled,      # 3 dims
+            ang_vel_scaled,      # 3 dims 
+            self.smooth_action   # 4 dims
         ]).astype(np.float32)
         
         obs = {"state": state_vec}
