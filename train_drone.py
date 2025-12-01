@@ -49,9 +49,9 @@ def parse_args():
     
     # Reward Shaping
     parser.add_argument("--waypoint_bonus", type = float, default = 10.0)
-    parser.add_argument("--crash_penalty", type = float, default = -10.0)
+    parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = 0.01)
+    parser.add_argument("--per_step_penalty", type = float, default = 0.1)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.25)
     parser.add_argument("--max_dist_from_target", type = float, default = 7.5)
 
