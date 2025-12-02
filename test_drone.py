@@ -1,6 +1,7 @@
 import time
 import argparse
 import numpy as np
+import matplotlib.pyplot as plt
 
 from utils import initialize_agent
 from bullet_env import BulletNavigationEnv
@@ -42,6 +43,29 @@ def run_one_episode(env, agent, max_steps, algo):
         state_vec = obs["state"]
         img_data = obs.get("image")
         lidar_data = obs.get("lidar")
+
+        if img_data is not None:
+            # Assuming Depth is the last channel
+            depth_channel = img_data[-1] # Shape (64, 64)
+
+            # if np.random.random() < 0.02:
+            #     plt.figure(figsize=(5, 4))
+            #     # Use 'plasma' or 'magma' cmap which is great for depth (Yellow=Close/High, Blue=Far/Low)
+            #     # vmin=0.0, vmax=1.0 ensures consistent coloring
+            #     plt.imshow(depth_channel, cmap='plasma', vmin=0.0, vmax=1.0)
+            #     plt.colorbar(label='Normalized Depth (0=Near, 1=Far)')
+            #     plt.title(f"Depth View @ Step {step}")
+                
+            #     plt.show()
+            
+            # Center pixel
+            center_val = depth_channel[32, 32]
+            
+            # Since we normalized by Far Plane (20.0m), convert back to read meters
+            real_meters = center_val * 20.0 
+            
+            # if step % 10 == 0:
+            #     print(f"Center Pixel Depth: {real_meters:.2f} meters")
 
         if hasattr(agent, 'get_deterministic_action'):
             action = agent.get_deterministic_action(state_vec, img = img_data, lidar = lidar_data)
@@ -118,6 +142,7 @@ def main():
     try:
         # Initialize fresh agent
         args.use_lidar = False
+        args.use_depth = False
         agent = initialize_agent(args, state_dim, action_dim, max_action)
         
         # Load weights

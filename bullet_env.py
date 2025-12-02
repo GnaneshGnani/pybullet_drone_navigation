@@ -171,7 +171,12 @@ class BulletNavigationEnv(gym.Env):
         action_body = np.array(scaled_action[:3])
         target_v_world = r.apply(action_body)
 
-        target_yaw_rate = scaled_action[3] 
+        # Hard-Coded Yaw
+        diff_vec = self.target_pos - current_pos
+        desired_yaw = np.arctan2(diff_vec[1], diff_vec[0])
+
+        # RL Yaw Rate
+        # target_yaw_rate = scaled_action[3] 
         
         # Compute RPMs using DSLPIDControl
         rpm, _, _ = self.ctrl.computeControl(
@@ -185,8 +190,13 @@ class BulletNavigationEnv(gym.Env):
             target_pos = current_pos, # Keep current pos target to force velocity tracking
             target_vel = target_v_world,
 
-            target_rpy = np.array([0, 0, 0]),
-            target_rpy_rates = np.array([0, 0, target_yaw_rate])
+            # Hard-Coded Yaw
+            target_rpy = np.array([0, 0, desired_yaw]),
+            target_rpy_rates = np.array([0, 0, 0])
+            
+            # RL Yaw Rate
+            # target_rpy = np.array([0, 0, 0]),
+            # target_rpy_rates = np.array([0, 0, target_yaw_rate])
         )
         
         # Step the environment with calculated RPMs
@@ -219,6 +229,40 @@ class BulletNavigationEnv(gym.Env):
         # High Velocity Penalty
         reward -= 0.05 * np.linalg.norm(lin_vel) ** 2
         reward -= 0.005 * np.linalg.norm(ang_vel) ** 2
+
+        # Alignment Penalty
+        ## Get the direction vector to the target (Normalized)
+        target_vec = self.target_pos - current_pos
+        if dist > 1e-6:
+            target_dir = target_vec / dist
+        else:
+            target_dir = np.zeros(3)
+
+        # Get the drone's actual forward direction in World coordinates
+        forward_world = r.apply([1, 0, 0]) # The body X-axis rotated to World frame
+
+        # Calculate alignment (Dot Product)
+        # We only care about 2D alignment (Yaw) for navigation, so ignore Z
+        alignment = np.dot(forward_world[:2], target_dir[:2])
+
+        # alignment ranges from -1.0 to 1.0.
+        # If you want it to be a pure penalty for misalignment:
+        # Penalty is 0 when aligned, and high when facing away.
+        heading_penalty = (1.0 - alignment) 
+        reward -= 0.1 * heading_penalty 
+
+        # OR, if you prefer positive reinforcement (Reward for facing correctly):
+        # reward += 0.1 * alignment
+
+        # print(
+        #     self.step_reward,
+        #     30.0 * progress,
+        #     -0.01 * np.linalg.norm(diff_action) ** 2,
+        #     -0.05 * np.linalg.norm(lin_vel) ** 2,
+        #     0.1 * heading_penalty 
+        # )
+
+        # print("Alignment:", alignment)
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
@@ -308,8 +352,14 @@ class BulletNavigationEnv(gym.Env):
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
 
         if self.use_camera or self.use_depth:
+            near_plane = 0.1
+            far_plane = 20.0 # Reduced from 100.0 to give better resolution for indoor flight
+
             cam_pos = pos + rot_mat @ [0.1, 0, 0]
             cam_target = pos + rot_mat @ [1.0, 0, 0]
+
+            p.addUserDebugLine(cam_pos, cam_target, [0, 0, 1], lineWidth = 2, lifeTime = 0.1, physicsClientId = self.env.CLIENT)
+
             cam_up = rot_mat @ [0, 0, 1]
             
             view = p.computeViewMatrix(cam_pos.tolist(), cam_target.tolist(), cam_up.tolist(), physicsClientId = self.env.CLIENT)
@@ -323,10 +373,23 @@ class BulletNavigationEnv(gym.Env):
                 img_stack.append(np.transpose(rgb_norm, (2, 0, 1)))
 
             if self.use_depth:
-                d_norm = np.array(depth, dtype = np.float32).reshape(1, 64, 64)
-                img_stack.append(d_norm)
+                # Reshape raw OpenGL buffer
+                depth = np.array(depth, dtype = np.float32).reshape(64, 64)
+
+                # Convert to Linear Depth (Meters)
+                # Formula: 2 * far * near / (far + near - (2 * depth - 1) * (far - near))
+                # Note: PyBullet depth buffer is range [0, 1]
+                depth_linear = (2.0 * near_plane * far_plane) / (far_plane + near_plane - (2.0 * depth - 1.0) * (far_plane - near_plane))
+
+                depth_norm = depth_linear / far_plane
+                depth_norm = np.clip(depth_norm, 0.0, 1.0)
+
+                d_final = depth_norm.reshape(1, 64, 64)
+                img_stack.append(d_final)
 
             obs["image"] = np.concatenate(img_stack, axis = 0)
+
+            # print(f"Shape: {obs.get('image').shape}")
 
         if self.use_lidar:
             ray_from, ray_to = [], []
@@ -347,7 +410,7 @@ class BulletNavigationEnv(gym.Env):
             actual_ray_len = length - start_offset
             lidar_data = [start_offset + res[2] * actual_ray_len for res in results]
             obs["lidar"] = np.array(lidar_data, dtype = np.float32)
-            
+          
         return obs
 
     def close(self):

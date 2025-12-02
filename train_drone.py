@@ -267,16 +267,17 @@ def main():
             dist_val = info.get("dist_to_current_target", 0)
             logger.report_scalar(title = "Debug", series = "Final Dist to Target", value = float(dist_val), iteration = episode)
 
-            for key, val in metrics.items():
-                logger.report_scalar(title = "Loss", series = key, value = float(val), iteration = episode)
-            
-            for scheduler in schedulers:
-                scheduler.step()
+            if len(metrics) > 0:
+                for key, val in metrics.items():
+                    logger.report_scalar(title = "Loss", series = key, value = float(val), iteration = episode)
+                
+                for scheduler in schedulers:
+                    scheduler.step()
 
-            logger.report_scalar(title = "Debug", series = "Actor Learning Rate", value = schedulers[0].get_last_lr()[0], iteration = episode)
-            logger.report_scalar(title = "Debug", series = "Critic Learning Rate", value = schedulers[1].get_last_lr()[0], iteration = episode)
-            if args.algo == "sac":
-                logger.report_scalar(title = "Debug", series = "Alpha Learning Rate", value = schedulers[2].get_last_lr()[0], iteration = episode)
+                logger.report_scalar(title = "Debug", series = "Actor Learning Rate", value = schedulers[0].get_last_lr()[0], iteration = episode)
+                logger.report_scalar(title = "Debug", series = "Critic Learning Rate", value = schedulers[1].get_last_lr()[0], iteration = episode)
+                if args.algo == "sac":
+                    logger.report_scalar(title = "Debug", series = "Alpha Learning Rate", value = schedulers[2].get_last_lr()[0], iteration = episode)
 
             print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
             
