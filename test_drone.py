@@ -39,8 +39,8 @@ def run_one_episode(env, agent, max_steps, algo):
     
     for step in range(max_steps):
         state_vec = obs["state"]
-        img_data = obs["image"]
-        lidar_data = obs["lidar"]
+        img_data = obs.get("image")
+        lidar_data = obs.get("lidar")
 
         if hasattr(agent, 'get_deterministic_action'):
             action = agent.get_deterministic_action(state_vec, img = img_data, lidar = lidar_data)
@@ -70,7 +70,9 @@ def run_one_episode(env, agent, max_steps, algo):
 def main():
     args = parse_args()
     wpm = WaypointManager()
-    waypoints = wpm.generate_square_path()
+    waypoints = wpm.generate_random_walk_path()
+
+    action_limits = [1.0, 1.0, 1.0, 1.0]
 
     env = BulletNavigationEnv(
         waypoints = waypoints,
@@ -84,6 +86,7 @@ def main():
         timeout_penalty = args.timeout_penalty,
         per_step_penalty = args.per_step_penalty,
         max_dist_from_target = args.max_dist_from_target,
+        action_limits = action_limits,
         gui = True,             
         show_waypoints = True   
     )

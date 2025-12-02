@@ -2,37 +2,48 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import gymnasium as gym
+from scipy.spatial.transform import Rotation as R
 
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class BulletNavigationEnv(gym.Env):
     def __init__(self, waypoints, use_camera = False, use_depth = False, use_lidar = False, 
                  use_obstacles = False, waypoint_threshold = 1.0, waypoint_bonus = 100.0,
-                 crash_penalty = 100.0, timeout_penalty = 10.0, per_step_penalty = -0.1,
-                 max_dist_from_target = 10.0, gui = False, show_waypoints = False):
+                 crash_penalty = -100.0, timeout_penalty = -10.0, step_reward = -0.1,
+                 episode_completion_reward = 100.0 ,max_dist_from_target = 10.0, 
+                 action_smoothing = 0.75, action_limits = None,  gui = False, 
+                 show_waypoints = False):
         
+        # Store a copy of the initial waypoints to detect the task type
         self.waypoints = waypoints
-        self.use_camera = use_camera
+        
         self.use_depth = use_depth
         self.use_lidar = use_lidar
+        self.use_camera = use_camera
         self.use_obstacles = use_obstacles
 
-        self.max_dist_from_target = max_dist_from_target
         self.show_waypoints = show_waypoints
+        self.max_dist_from_target = max_dist_from_target
         
         # Reward Config
-        self.waypoint_threshold = waypoint_threshold
-        self.waypoint_bonus = waypoint_bonus
+        self.step_reward = step_reward
         self.crash_penalty = crash_penalty
+        self.waypoint_bonus = waypoint_bonus
         self.timeout_penalty = timeout_penalty
-        self.per_step_penalty = per_step_penalty
+        self.episode_completion_reward = episode_completion_reward
+        
+        self.waypoint_threshold = waypoint_threshold
+
+        self.lidar_rays = 360
+        self.prev_action = np.zeros(4)
         
         # Visualization IDs
         self.marker_ids = [] 
         self.debug_line_ids = []
 
-        # PyBullet Drone Init (Using CtrlAviary for correct physics stepping)
+        # PyBullet Drone Init
         self.env = CtrlAviary(
             drone_model = DroneModel.CF2X,
             num_drones = 1,
@@ -40,13 +51,28 @@ class BulletNavigationEnv(gym.Env):
             physics = Physics.PYB,
             gui = gui,
             pyb_freq = 240,
-            ctrl_freq = 240 #48
+            ctrl_freq = 48 
         )
+
+        self.ctrl = DSLPIDControl(drone_model = DroneModel.CF2X)
         
-        # Action & Observation Spaces
+        # Action Space
+        # [Target Vx, Target Vy, Target Vz, Target Yaw Rate]
+        self.action_smoothing = action_smoothing  # Smoothing factor (0.1 = very smooth/sluggish, 0.9 = responsive/jerky)
+        self.smooth_action = np.zeros(4)
+        self.action_limits = np.array(action_limits) if action_limits is not None else np.array([1.0, 1.0, 1.0, 1.0])
+
         self.action_space = gym.spaces.Box(low = -1, high = 1, shape = (4,), dtype = np.float32)
-        self.state_dim = 16
-        self.lidar_rays = 360
+        
+        # State Dimension Calculation
+        ## Target Direction (Unit Vector) -> 3
+        ## Distance (Scalar)              -> 1
+        ## Quaternion (Orientation)       -> 4
+        ## Linear Velocity                -> 3
+        ## Angular Velocity               -> 3
+        ## Previous Action (Motor State)  -> 4 (self.action_space.shape[0])
+        self.state_dim = 3 + 1 + 4 + 3 + 3 + self.action_space.shape[0]
+
 
         obs_spaces = {
             "state": gym.spaces.Box(low = -np.inf, high = np.inf, shape = (self.state_dim,), dtype = np.float32)
@@ -70,11 +96,15 @@ class BulletNavigationEnv(gym.Env):
         self._draw_waypoints()
         
         self.current_wp_idx = 0
+        self.prev_action = np.zeros(4) 
+        self.smooth_action = np.zeros(4)
         self.target_pos = self.waypoints[self.current_wp_idx]
         self.prev_dist = np.linalg.norm(self._get_drone_pos() - self.target_pos)
-
+        
         if self.use_obstacles:
             self._spawn_obstacles()
+
+        self.ctrl.reset()
 
         return self._get_observation(), {}
 
@@ -87,16 +117,20 @@ class BulletNavigationEnv(gym.Env):
             self.debug_line_ids = []
 
             for i, wp in enumerate(self.waypoints):
-                print("Waypoint", i, wp)
+                # Only draw the first waypoint for hover tasks, or all for pathing
+                if len(self.waypoints) > 1 and np.allclose(self.waypoints[0], self.waypoints[-1]) and i > 0:
+                    break 
 
                 visual_shape_id = p.createVisualShape(
                     shapeType = p.GEOM_SPHERE,
-                    radius = 0.1,             # Slightly larger to be visible
-                    rgbaColor = [0, 1, 0, 1], # Green
+                    radius = 0.1,
+                    rgbaColor = [0, 1, 0, 1],
                     physicsClientId = self.env.CLIENT
                 )
                 
                 body_id = p.createMultiBody(
+                    baseMass = 0,
+                    baseCollisionShapeIndex = -1, # No Collision Shape
                     baseVisualShapeIndex = visual_shape_id,
                     basePosition = wp,
                     physicsClientId = self.env.CLIENT
@@ -108,7 +142,7 @@ class BulletNavigationEnv(gym.Env):
                     line_id = p.addUserDebugLine(
                         lineFromXYZ = wp,
                         lineToXYZ = next_wp,
-                        lineColorRGB = [1, 0, 0], # Red
+                        lineColorRGB = [1, 0, 0],
                         lineWidth = 3.0,
                         physicsClientId = self.env.CLIENT
                     )
@@ -123,97 +157,109 @@ class BulletNavigationEnv(gym.Env):
             if np.linalg.norm([x, y]) > 1.0:
                 p.loadURDF("cube.urdf", [x, y, z], globalScaling = 0.6, physicsClientId = self.env.CLIENT)
 
-    def step(self, action):
-        hover_rpm = 14500
+    def step(self, action):  
+        self.smooth_action = self.action_smoothing * action + (1 - self.action_smoothing) * self.smooth_action    
+        scaled_action = self.smooth_action * self.action_limits
 
-        roll_cmd = action[0]   # -1 to 1
-        pitch_cmd = action[1]  # -1 to 1
-        yaw_cmd = action[2]    # -1 to 1
-        thrust_cmd = action[3] # -1 to 1
+        pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
+        lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
 
-        thrust_offset = thrust_cmd * 4000  # Scale thrust command
-        base_rpm = hover_rpm + thrust_offset
+        current_pos = np.array(pos)
+        lin_vel_np = np.array(lin_vel)
 
-        # Control authority (how much each command affects motors)
-        roll_authority = 2000
-        pitch_authority = 2000
-        yaw_authority = 1000
+        r = R.from_quat(quat)
 
-        # CF2X motor layout (X configuration):
-        #     Front
-        #   3     0
-        #     \ /
-        #     / \
-        #   2     1
-        #     Back
-        #
-        # Motor spin directions (for yaw):
+        action_body = np.array(scaled_action[:3])
+        target_v_world = r.apply(action_body)
 
-        r = roll_cmd * roll_authority
-        p = -pitch_cmd * pitch_authority
-        y = yaw_cmd * yaw_authority
-
-        rpm_0 = base_rpm - r + p - y
-        rpm_1 = base_rpm - r - p + y
-        rpm_2 = base_rpm + r - p - y
-        rpm_3 = base_rpm + r + p + y
+        target_yaw_rate = scaled_action[3] 
         
-        pwms = np.array([rpm_0, rpm_1, rpm_2, rpm_3])
-        pwms = np.clip(pwms, 0, 60000)
+        # Compute RPMs using DSLPIDControl
+        rpm, _, _ = self.ctrl.computeControl(
+            control_timestep = 1.0 / self.env.CTRL_FREQ,
+
+            cur_pos = current_pos,
+            cur_quat = np.array(quat),
+            cur_vel = lin_vel_np,
+            cur_ang_vel = np.array(ang_vel),
+
+            target_pos = current_pos, # Keep current pos target to force velocity tracking
+            target_vel = target_v_world,
+
+            target_rpy = np.array([0, 0, 0]),
+            target_rpy_rates = np.array([0, 0, target_yaw_rate])
+        )
         
-        self.env.step(pwms.reshape(1, 4))
+        # Step the environment with calculated RPMs
+        self.env.step(rpm.reshape(1, 4))
+
+        # We must re-read position to calculate reward for the NEW state
+        pos, quat = p.getBasePositionAndOrientation(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
+        lin_vel, ang_vel = p.getBaseVelocity(self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         
-        # 2. Get Obs & Reward
+        current_pos = np.array(pos)
+        lin_vel_np = np.array(lin_vel)
+
         obs = self._get_observation()
-        reward = self.per_step_penalty
-        
-        current_pos = obs["state"][:3]
-        dist = np.linalg.norm(current_pos - self.target_pos)
-        
-        reward += (self.prev_dist - dist) * 10.0
-        self.prev_dist = dist
 
-        ang_vel = obs["state"][10 : 13]
-        # Penalize high angular velocity to prevent spinning/tumbling
-        reward -= np.linalg.norm(ang_vel) * 0.05
-        
-        # Penalize erratic control inputs (optional, helps smoothness)
-        reward -= np.linalg.norm(action[:3]) * 0.1
-        
+        reward = 0
         terminated = False
         truncated = False
+        
+        reward += (self.step_reward)
+        
+        dist = np.linalg.norm(current_pos - self.target_pos)
 
-        # Terminate if too far from the CURRENT target waypoint
-        if dist > self.max_dist_from_target:
-            reward -=  self.timeout_penalty
-            terminated = True
+        progress = self.prev_dist - dist
+        reward += 30.0 * progress
+
+        # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
+        diff_action = action - self.prev_action
+        reward -= 0.01 * np.linalg.norm(diff_action) ** 2
+
+        # High Velocity Penalty
+        reward -= 0.05 * np.linalg.norm(lin_vel) ** 2
+        reward -= 0.005 * np.linalg.norm(ang_vel) ** 2
 
         if dist < self.waypoint_threshold:
-            reward +=  self.waypoint_bonus
-            self.current_wp_idx +=  1
-            if self.current_wp_idx >=  len(self.waypoints):
+            reward += self.waypoint_bonus
+            self.current_wp_idx += 1
+
+            if self.current_wp_idx >= len(self.waypoints):
                 print("--- Course Complete! ---")
+                reward += self.episode_completion_reward
                 terminated = True
 
             else:
                 self.target_pos = self.waypoints[self.current_wp_idx]
                 print(f"--- Reached Waypoint {self.current_wp_idx} ---")
-                current_pos = obs["state"][:3]
                 self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
 
-        if current_pos[2] < 0.1: 
-            reward -= self.crash_penalty
-            terminated = True
-            
-        if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 20:
-            reward -= self.crash_penalty
+        contact_points = p.getContactPoints(bodyA = self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
+        if len(contact_points) > 0:
+            print("Crashed!")
+            reward += self.crash_penalty
             terminated = True
 
+        if dist > self.max_dist_from_target:
+            print("Timeout!")
+            reward += self.timeout_penalty
+            terminated = True
+            
+        if abs(current_pos[0]) > 20 or abs(current_pos[1]) > 20 or current_pos[2] > 10:
+            print("Out of Boundary!")
+            terminated = True
+
+        # Store the current action for the next time step's observation
+        self.prev_action = np.array(action)
+        self.prev_dist = dist
+        
         info = {
             "waypoints_reached": self.current_wp_idx,
             "total_waypoints": len(self.waypoints),
             "dist_to_current_target": dist
         }
+
         return obs, reward, terminated, truncated, info
 
     def _get_drone_pos(self):
@@ -228,11 +274,38 @@ class BulletNavigationEnv(gym.Env):
         quat = np.array(quat)
         lin_vel = np.array(lin_vel)
         ang_vel = np.array(ang_vel)
+
+        r = R.from_quat(quat)
+        r_inv = r.inv()
+        rot_mat = r.as_matrix()
         
-        target_vec = self.target_pos - pos
-        state_vec = np.concatenate([pos, quat, lin_vel, ang_vel, target_vec]).astype(np.float32)
+        target_vec_world = self.target_pos - pos
+        target_vec_body = r_inv.apply(target_vec_world)
+
+        dist = np.linalg.norm(target_vec_body)
+        dist_feat = np.log(dist + 1.0)
+
+        if dist > 1e-5:
+            target_direction = target_vec_body / dist
+        else:
+            target_direction = np.zeros(3)
+
+        lin_vel_body = r_inv.apply(lin_vel)
+
+        lin_vel_scaled = np.clip(lin_vel_body, -2.0, 2.0) / 2.0
+        ang_vel_scaled = np.clip(ang_vel, -3.0, 3.0) / 3.0
+
+        # target vector, orientation, velocities, and previous action
+        state_vec = np.concatenate([
+            target_direction,    # 3 dims
+            [dist_feat],         # 1 dim
+            quat,                # 4 dims
+            lin_vel_scaled,      # 3 dims
+            ang_vel_scaled,      # 3 dims 
+            self.smooth_action   # 4 dims
+        ]).astype(np.float32)
         
-        obs = {"state": state_vec, "image": None, "lidar": None}
+        obs = {"state": state_vec}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
 
         if self.use_camera or self.use_depth:
