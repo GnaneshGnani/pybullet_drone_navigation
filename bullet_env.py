@@ -9,15 +9,15 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class BulletNavigationEnv(gym.Env):
-    def __init__(self, waypoints, use_camera = False, use_depth = False, use_lidar = False, 
-                 use_obstacles = False, waypoint_threshold = 1.0, waypoint_bonus = 100.0,
-                 crash_penalty = -100.0, timeout_penalty = -10.0, step_reward = -0.1,
-                 episode_completion_reward = 100.0 ,max_dist_from_target = 10.0, 
-                 action_smoothing = 0.75, action_limits = None,  gui = False, 
-                 show_waypoints = False):
+    def __init__(self, waypoints, obstacles = [], use_camera = False, use_depth = False, 
+                 use_lidar = False, use_obstacles = False, waypoint_threshold = 1.0, 
+                 waypoint_bonus = 100.0, crash_penalty = -100.0, timeout_penalty = -10.0, 
+                 step_reward = -0.1, episode_completion_reward = 100.0, max_dist_from_target = 10.0, 
+                 action_smoothing = 0.75, action_limits = None,  gui = False,  show_waypoints = False):
         
         # Store a copy of the initial waypoints to detect the task type
         self.waypoints = waypoints
+        self.obstacles = obstacles
         
         self.use_depth = use_depth
         self.use_lidar = use_lidar
@@ -94,15 +94,14 @@ class BulletNavigationEnv(gym.Env):
             raise ValueError("No waypoints provided.")
         
         self._draw_waypoints()
+        if self.use_obstacles:
+            self._draw_obstacles()
         
         self.current_wp_idx = 0
         self.prev_action = np.zeros(4) 
         self.smooth_action = np.zeros(4)
         self.target_pos = self.waypoints[self.current_wp_idx]
         self.prev_dist = np.linalg.norm(self._get_drone_pos() - self.target_pos)
-        
-        if self.use_obstacles:
-            self._spawn_obstacles()
 
         self.ctrl.reset()
 
@@ -148,14 +147,14 @@ class BulletNavigationEnv(gym.Env):
                     )
                     self.debug_line_ids.append(line_id)
 
-    def _spawn_obstacles(self):
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        for _ in range(6):
-            x = np.random.uniform(-4, 4)
-            y = np.random.uniform(-4, 4)
-            z = np.random.uniform(3.0, 7.0)
-            if np.linalg.norm([x, y]) > 1.0:
-                p.loadURDF("cube.urdf", [x, y, z], globalScaling = 0.6, physicsClientId = self.env.CLIENT)
+    def _draw_obstacles(self):
+        if not self.show_waypoints:
+            return
+        
+        if p.getConnectionInfo(physicsClientId = self.env.CLIENT)["connectionMethod"] == p.GUI:
+            p.setAdditionalSearchPath(pybullet_data.getDataPath())
+            for pos in self.obstacles:
+                p.loadURDF("cube.urdf", pos, globalScaling = 0.6, useFixedBase = True, physicsClientId = self.env.CLIENT)
 
     def step(self, action):  
         self.smooth_action = self.action_smoothing * action + (1 - self.action_smoothing) * self.smooth_action    

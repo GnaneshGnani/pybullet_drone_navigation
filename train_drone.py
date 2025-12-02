@@ -177,6 +177,7 @@ def main():
     
     env = BulletNavigationEnv(
         waypoints = [],
+        obstacles = [],
         use_camera = args.use_camera,
         use_depth = args.use_depth,
         use_lidar = args.use_lidar,
@@ -196,7 +197,7 @@ def main():
 
     max_action = 1.0
     state_dim = env.state_dim
-    action_dim = env.action_space.shape[4]
+    action_dim = env.action_space.shape[0]
     agent = initialize_agent(args, state_dim, action_dim, max_action)
 
     # Transfer Learning
@@ -240,10 +241,12 @@ def main():
 
             elif args.task == "random":
                 waypoints = wpm.generate_random_walk_path()
-                args.use_obstacles = True 
+                if args.use_obstacles:
+                    obstacles = wpm.generate_obstacles(num_obstacles = 6)
+                    env.obstacles = obstacles
             
             env.waypoints = waypoints
-
+            
             reward, length, metrics, info = run_one_episode(env, agent, args.max_steps, args.algo, not args.headless)
 
             if (length + 1) == args.max_steps: print("Max Steps!")

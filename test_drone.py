@@ -1,5 +1,6 @@
 import time
 import argparse
+import numpy as np
 
 from utils import initialize_agent
 from bullet_env import BulletNavigationEnv
@@ -26,7 +27,7 @@ def parse_args():
     parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
     parser.add_argument("--crash_penalty", type = float, default = 50.0)
     parser.add_argument("--timeout_penalty", type = float, default = 10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = -0.1)
+    parser.add_argument("--step_reward", type = float, default = -0.1)
     parser.add_argument("--max_dist_from_target", type = float, default = 10.0)
     
     # Path to the specific experiment folder (e.g. ./models/run_sac)
@@ -52,7 +53,22 @@ def run_one_episode(env, agent, max_steps, algo):
             else:
                 action = agent.get_action(state_vec, img = img_data, lidar = lidar_data)
         
-        print("Step:", step, "Action:", action)
+        # print("Step:", step, "Action:", action)
+
+        lidar_data = obs.get("lidar")
+        if lidar_data is not None:
+            min_dist = np.min(lidar_data)
+            max_dist = np.max(lidar_data)
+            
+            # Only print if something is close (e.g., < 2.0m)
+            # Max range is approx 5.0m based on your bullet_env.py
+            if min_dist < 4.5: 
+                # Find which angle has the closest object
+                min_idx = np.argmin(lidar_data)
+                angle = (min_idx / 360.0) * 360
+                print(f"LIDAR DETECTED: Dist={min_dist:.2f}m @ {angle:.0f} deg")
+            else:
+                pass
         
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
@@ -72,10 +88,14 @@ def main():
     wpm = WaypointManager()
     waypoints = wpm.generate_random_walk_path()
 
+    if args.use_obstacles:
+        obstacles = wpm.generate_obstacles(num_obstacles = 1)
+
     action_limits = [1.0, 1.0, 1.0, 1.0]
 
     env = BulletNavigationEnv(
         waypoints = waypoints,
+        obstacles = obstacles,
         use_camera = args.use_camera,
         use_depth = args.use_depth,
         use_lidar = args.use_lidar,
@@ -84,7 +104,7 @@ def main():
         waypoint_bonus = args.waypoint_bonus,
         crash_penalty = args.crash_penalty,
         timeout_penalty = args.timeout_penalty,
-        per_step_penalty = args.per_step_penalty,
+        step_reward = args.step_reward,
         max_dist_from_target = args.max_dist_from_target,
         action_limits = action_limits,
         gui = True,             
@@ -92,11 +112,12 @@ def main():
     )
 
     state_dim = env.state_dim
-    action_dim = 4
+    action_dim = env.action_space.shape[0]
     max_action = 1.0
     
     try:
         # Initialize fresh agent
+        args.use_lidar = False
         agent = initialize_agent(args, state_dim, action_dim, max_action)
         
         # Load weights

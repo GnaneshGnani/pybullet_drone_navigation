@@ -9,6 +9,47 @@ class WaypointManager:
         waypoint = np.array([x, y, z])
         self.waypoints.append(waypoint)
         return waypoint
+    
+    def generate_obstacles(self, num_obstacles=6):
+        if len(self.waypoints) < 2:
+            return []
+
+        obstacle_positions = []
+        valid_segments = len(self.waypoints) - 1
+        
+        # Skip the first segment (0 -> 1) for safety
+        start_segment = 1 if valid_segments > 1 else 0
+        
+        # Create a list of all possible segments indices
+        available_indices = np.arange(start_segment, valid_segments)
+        
+        # Strategy: Sample indices to ensure spread
+        if num_obstacles <= len(available_indices):
+            # If we have enough segments, pick unique ones (No Overlap)
+            chosen_indices = np.random.choice(available_indices, num_obstacles, replace=False)
+        
+        else:
+            # If we have more obstacles than segments, we must reuse some
+            # This ensures every segment gets at least one before we double up
+            base_indices = np.tile(available_indices, int(np.ceil(num_obstacles / len(available_indices))))
+            chosen_indices = base_indices[ : num_obstacles]
+
+        for segment_idx in chosen_indices:
+            p1 = self.waypoints[segment_idx]
+            p2 = self.waypoints[segment_idx + 1]
+            
+            # Interpolate (30% to 70%)
+            t = np.random.uniform(0.3, 0.7)
+            pos = p1 + (p2 - p1) * t
+            
+            # Add Noise
+            offset_x = np.random.uniform(-0.1, 0.1) 
+            offset_y = np.random.uniform(-0.1, 0.1)
+            offset_z = np.random.uniform(-0.3, 0.3)
+            
+            obstacle_positions.append(pos + np.array([offset_x, offset_y, offset_z]))
+            
+        return obstacle_positions
 
     def get_waypoints(self):
         return np.array(self.waypoints)
