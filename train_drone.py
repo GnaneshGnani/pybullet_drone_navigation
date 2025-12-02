@@ -28,6 +28,18 @@ def parse_args():
     parser.add_argument("--load_model", type = str, default = "", 
                         help = "Path to a PREVIOUS run folder (e.g., training_runs/run_sac_1) to load weights from.")
     
+    # Action Limits
+    parser.add_argument("--action_smoothing", type = float, default = 0.75, 
+                        help = "Alpha for action smoothing (0.1=sluggish, 0.9=responsive).")
+    parser.add_argument("--max_lin_vel_x", type = float, default = 1.0, 
+                        help = "Max linear velocity in m/s (approx). X-direction")
+    parser.add_argument("--max_lin_vel_y", type = float, default = 1.0, 
+                        help = "Max linear velocity in m/s (approx). Y-direction")
+    parser.add_argument("--max_lin_vel_z", type = float, default = 1.0, 
+                        help = "Max linear velocity in m/s (approx). Z-direction")
+    parser.add_argument("--max_yaw_rate", type = float, default = 1.0, 
+                        help = "Max angular velocity in rad/s (approx).")
+    
     # Training Params
     parser.add_argument("--episodes", type = int, default = 2000)
     parser.add_argument("--algo", type = str, default = "sac", choices = ["sac", "ppo", "ddpg"])
@@ -48,12 +60,13 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
+    parser.add_argument("--step_reward", type = float, default = 0.1)
     parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
     parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
-    parser.add_argument("--per_step_penalty", type = float, default = 0.1)
     parser.add_argument("--waypoint_threshold", type = float, default = 0.25)
     parser.add_argument("--max_dist_from_target", type = float, default = 7.5)
+    parser.add_argument("--episode_completion_reward", type = float, default = 100.0)
 
     # Logging
     parser.add_argument("--project_name", type = str, default = "PyBullet Training")
@@ -159,8 +172,6 @@ def main():
     else:
         print("Logging Disabled")
         logger = DummyLogger() # Using the dummy class so report_scalar calls don't crash
-    
-    action_limits = [1.0, 1.0, 1.0, 1.0]
 
     wpm = WaypointManager()
     
@@ -174,16 +185,18 @@ def main():
         waypoint_bonus = args.waypoint_bonus,
         crash_penalty = args.crash_penalty,
         timeout_penalty = args.timeout_penalty,
-        per_step_penalty = args.per_step_penalty,
+        step_reward = args.step_reward,
+        episode_completion_reward = args.episode_completion_reward,
         max_dist_from_target = args.max_dist_from_target,
-        action_limits = action_limits,
+        action_smoothing = args.action_smoothing,
+        action_limits = [args.max_lin_vel_x, args.max_lin_vel_y, args.max_lin_vel_z, args.max_yaw_rate],
         gui = not args.headless,
         show_waypoints = args.visualize
     )
 
-    state_dim = env.state_dim
-    action_dim = 4
     max_action = 1.0
+    state_dim = env.state_dim
+    action_dim = env.action_space.shape[4]
     agent = initialize_agent(args, state_dim, action_dim, max_action)
 
     # Transfer Learning
