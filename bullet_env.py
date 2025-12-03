@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pybullet as p
 import pybullet_data
@@ -13,7 +14,8 @@ class BulletNavigationEnv(gym.Env):
                  use_lidar = False, use_obstacles = False, waypoint_threshold = 1.0, 
                  waypoint_bonus = 100.0, crash_penalty = -100.0, timeout_penalty = -10.0, 
                  step_reward = -0.1, episode_completion_reward = 100.0, max_dist_from_target = 10.0, 
-                 action_smoothing = 0.75, action_limits = None,  gui = False,  show_waypoints = False):
+                 action_smoothing = 0.75, action_limits = None,  gui = False,  show_waypoints = False,
+                 hardcoded_yaw = False, max_steps = 5000):
         
         # Store a copy of the initial waypoints to detect the task type
         self.waypoints = waypoints
@@ -37,7 +39,9 @@ class BulletNavigationEnv(gym.Env):
         self.waypoint_threshold = waypoint_threshold
 
         self.lidar_rays = 360
+        self.max_steps = max_steps
         self.prev_action = np.zeros(4)
+        self.hardcoded_yaw = hardcoded_yaw
         
         # Visualization IDs
         self.marker_ids = [] 
@@ -97,6 +101,7 @@ class BulletNavigationEnv(gym.Env):
         if self.use_obstacles:
             self._draw_obstacles()
         
+        self.step_count = 0
         self.current_wp_idx = 0
         self.prev_action = np.zeros(4) 
         self.smooth_action = np.zeros(4)
@@ -148,15 +153,16 @@ class BulletNavigationEnv(gym.Env):
                     self.debug_line_ids.append(line_id)
 
     def _draw_obstacles(self):
-        if not self.show_waypoints:
-            return
+        self.obstacle_ids = []
         
-        if p.getConnectionInfo(physicsClientId = self.env.CLIENT)["connectionMethod"] == p.GUI:
-            p.setAdditionalSearchPath(pybullet_data.getDataPath())
-            for pos in self.obstacles:
-                p.loadURDF("cube.urdf", pos, globalScaling = 0.6, useFixedBase = True, physicsClientId = self.env.CLIENT)
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        for pos in self.obstacles:
+            obs_id = p.loadURDF("cube.urdf", pos, globalScaling = 0.6, useFixedBase = True, physicsClientId = self.env.CLIENT)
+            self.obstacle_ids.append(obs_id)
 
     def step(self, action):  
+        self.step_count += 1
+
         self.smooth_action = self.action_smoothing * action + (1 - self.action_smoothing) * self.smooth_action    
         scaled_action = self.smooth_action * self.action_limits
 
@@ -171,12 +177,18 @@ class BulletNavigationEnv(gym.Env):
         action_body = np.array(scaled_action[:3])
         target_v_world = r.apply(action_body)
 
-        # Hard-Coded Yaw
-        diff_vec = self.target_pos - current_pos
-        desired_yaw = np.arctan2(diff_vec[1], diff_vec[0])
+        if self.hardcoded_yaw:
+            diff_vec = self.target_pos - current_pos
+            desired_yaw = np.arctan2(diff_vec[1], diff_vec[0])
 
-        # RL Yaw Rate
-        # target_yaw_rate = scaled_action[3] 
+            target_rpy = np.array([0, 0, desired_yaw])
+            target_rpy_rates = np.array([0, 0, 0])
+
+        else:
+            target_yaw_rate = scaled_action[3] 
+
+            target_rpy = np.array([0, 0, 0])
+            target_rpy_rates = np.array([0, 0, target_yaw_rate])
         
         # Compute RPMs using DSLPIDControl
         rpm, _, _ = self.ctrl.computeControl(
@@ -190,13 +202,8 @@ class BulletNavigationEnv(gym.Env):
             target_pos = current_pos, # Keep current pos target to force velocity tracking
             target_vel = target_v_world,
 
-            # Hard-Coded Yaw
-            target_rpy = np.array([0, 0, desired_yaw]),
-            target_rpy_rates = np.array([0, 0, 0])
-            
-            # RL Yaw Rate
-            # target_rpy = np.array([0, 0, 0]),
-            # target_rpy_rates = np.array([0, 0, target_yaw_rate])
+            target_rpy = target_rpy,
+            target_rpy_rates = target_rpy_rates
         )
         
         # Step the environment with calculated RPMs
@@ -215,7 +222,7 @@ class BulletNavigationEnv(gym.Env):
         terminated = False
         truncated = False
         
-        reward += (self.step_reward)
+        reward += self.step_reward
         
         dist = np.linalg.norm(current_pos - self.target_pos)
 
@@ -233,8 +240,9 @@ class BulletNavigationEnv(gym.Env):
         # Alignment Penalty
         ## Get the direction vector to the target (Normalized)
         target_vec = self.target_pos - current_pos
+        target_dist = np.linalg.norm(target_vec)
         if dist > 1e-6:
-            target_dir = target_vec / dist
+            target_dir = target_vec / target_dist
         else:
             target_dir = np.zeros(3)
 
@@ -259,10 +267,13 @@ class BulletNavigationEnv(gym.Env):
         #     30.0 * progress,
         #     -0.01 * np.linalg.norm(diff_action) ** 2,
         #     -0.05 * np.linalg.norm(lin_vel) ** 2,
-        #     0.1 * heading_penalty 
+        #     -0.1 * heading_penalty,
+        #     0.1 * alignment
         # )
 
         # print("Alignment:", alignment)
+        # print("Total Reward:", reward, reward + 0.1 * heading_penalty)
+        # print()
 
         if dist < self.waypoint_threshold:
             reward += self.waypoint_bonus
@@ -276,13 +287,25 @@ class BulletNavigationEnv(gym.Env):
             else:
                 self.target_pos = self.waypoints[self.current_wp_idx]
                 print(f"--- Reached Waypoint {self.current_wp_idx} ---")
-                self.prev_dist = np.linalg.norm(current_pos - self.target_pos)
+                dist = np.linalg.norm(current_pos - self.target_pos)
+                self.prev_dist = dist
 
         contact_points = p.getContactPoints(bodyA = self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         if len(contact_points) > 0:
             print("Crashed!")
-            reward += self.crash_penalty
             terminated = True
+
+            hit_body_id = contact_points[0][2]
+            if hit_body_id in self.obstacle_ids:
+                reward += self.crash_penalty
+                print(f"Hit Obstacle! (Fixed Penalty: {self.crash_penalty})")
+                
+            else:
+                ratio = np.clip(self.step_count / self.max_steps, 1e-6, 1.0)
+                dynamic_crash_penalty = math.log(ratio) * 40
+                
+                reward += dynamic_crash_penalty
+                print(f"Hit Ground! (Dynamic Penalty: {dynamic_crash_penalty:.2f})")
 
         if dist > self.max_dist_from_target:
             print("Timeout!")
@@ -351,6 +374,34 @@ class BulletNavigationEnv(gym.Env):
         obs = {"state": state_vec}
         rot_mat = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
 
+        # --- VISUAL VERIFICATION START ---
+        # Draw the Body Axes relative to the drone
+        # RED   = X Axis (Forward)
+        # GREEN = Y Axis (Left)
+        # BLUE  = Z Axis (Up)
+        
+        # # Calculate endpoints for the lines
+        # front_endpoint = pos + rot_mat @ [1.0, 0, 0] # 1 meter long line
+        # p.addUserDebugLine(
+        #     lineFromXYZ=pos, 
+        #     lineToXYZ=front_endpoint, 
+        #     lineColorRGB=[1, 0, 0], # RED = Front Face
+        #     lineWidth=4, 
+        #     lifeTime=1, 
+        #     physicsClientId=self.env.CLIENT
+        # )
+
+        # # Draw the Vector to the Next Waypoint
+        # # This shows exactly where the drone SHOULD be looking.
+        # p.addUserDebugLine(
+        #     lineFromXYZ=pos, 
+        #     lineToXYZ=self.target_pos, 
+        #     lineColorRGB=[1, 1, 0], # YELLOW = Path to Target
+        #     lineWidth=2, 
+        #     lifeTime=1, 
+        #     physicsClientId=self.env.CLIENT
+        # )
+
         if self.use_camera or self.use_depth:
             near_plane = 0.1
             far_plane = 20.0 # Reduced from 100.0 to give better resolution for indoor flight
@@ -358,7 +409,7 @@ class BulletNavigationEnv(gym.Env):
             cam_pos = pos + rot_mat @ [0.1, 0, 0]
             cam_target = pos + rot_mat @ [1.0, 0, 0]
 
-            p.addUserDebugLine(cam_pos, cam_target, [0, 0, 1], lineWidth = 2, lifeTime = 0.1, physicsClientId = self.env.CLIENT)
+            # p.addUserDebugLine(cam_pos, cam_target, [0, 0, 1], lineWidth = 2, lifeTime = 0.1, physicsClientId = self.env.CLIENT)
 
             cam_up = rot_mat @ [0, 0, 1]
             

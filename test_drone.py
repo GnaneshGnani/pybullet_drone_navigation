@@ -26,10 +26,10 @@ def parse_args():
     # Env Params
     parser.add_argument("--waypoint_threshold", type = float, default = 0.5)
     parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
-    parser.add_argument("--crash_penalty", type = float, default = 50.0)
-    parser.add_argument("--timeout_penalty", type = float, default = 10.0)
-    parser.add_argument("--step_reward", type = float, default = -0.1)
-    parser.add_argument("--max_dist_from_target", type = float, default = 10.0)
+    parser.add_argument("--crash_penalty", type = float, default = -100.0)
+    parser.add_argument("--timeout_penalty", type = float, default = -10.0)
+    parser.add_argument("--step_reward", type = float, default = 0.1)
+    parser.add_argument("--max_dist_from_target", type = float, default = 17.5)
     
     # Path to the specific experiment folder (e.g. ./models/run_sac)
     parser.add_argument("--model_path", type = str, required = True, help = "Path to experiment folder containing actor.pth")
@@ -48,15 +48,16 @@ def run_one_episode(env, agent, max_steps, algo):
             # Assuming Depth is the last channel
             depth_channel = img_data[-1] # Shape (64, 64)
 
-            # if np.random.random() < 0.02:
-            #     plt.figure(figsize=(5, 4))
-            #     # Use 'plasma' or 'magma' cmap which is great for depth (Yellow=Close/High, Blue=Far/Low)
-            #     # vmin=0.0, vmax=1.0 ensures consistent coloring
-            #     plt.imshow(depth_channel, cmap='plasma', vmin=0.0, vmax=1.0)
-            #     plt.colorbar(label='Normalized Depth (0=Near, 1=Far)')
-            #     plt.title(f"Depth View @ Step {step}")
+            print("Depth")
+            if np.random.random() < 0.02:
+                plt.figure(figsize=(5, 4))
+                # Use 'plasma' or 'magma' cmap which is great for depth (Yellow=Close/High, Blue=Far/Low)
+                # vmin=0.0, vmax=1.0 ensures consistent coloring
+                plt.imshow(depth_channel, cmap='plasma', vmin=0.0, vmax=1.0)
+                plt.colorbar(label='Normalized Depth (0=Near, 1=Far)')
+                plt.title(f"Depth View @ Step {step}")
                 
-            #     plt.show()
+                plt.show()
             
             # Center pixel
             center_val = depth_channel[32, 32]
@@ -98,6 +99,9 @@ def run_one_episode(env, agent, max_steps, algo):
         done = terminated or truncated
         obs = next_obs
         episode_reward += reward
+
+        print("Episode Reward:", episode_reward)
+        print()
         
         # Slow down for visualization
         time.sleep(0.1) 

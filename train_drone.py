@@ -76,6 +76,7 @@ def parse_args():
     # Misc
     parser.add_argument("--headless", action = "store_true")
     parser.add_argument("--visualize", action = "store_true")
+    parser.add_argument("--hardcoded_yaw", action = "store_true")
     parser.add_argument("--run_tag", type = str, default = "run")
     parser.add_argument("--save_dir", type = str, default = "./training_runs")
     parser.add_argument("--no_logging", action = "store_true", help = "Disable ClearML logging for debugging/local runs.")
@@ -192,7 +193,9 @@ def main():
         action_smoothing = args.action_smoothing,
         action_limits = [args.max_lin_vel_x, args.max_lin_vel_y, args.max_lin_vel_z, args.max_yaw_rate],
         gui = not args.headless,
-        show_waypoints = args.visualize
+        show_waypoints = args.visualize,
+        hardcoded_yaw = args.hardcoded_yaw,
+        max_steps = args.max_steps
     )
 
     max_action = 1.0
