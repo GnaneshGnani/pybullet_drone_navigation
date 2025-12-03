@@ -97,6 +97,7 @@ class BulletNavigationEnv(gym.Env):
         if len(self.waypoints) == 0:
             raise ValueError("No waypoints provided.")
         
+        self.obstacle_ids = []
         self._draw_waypoints()
         if self.use_obstacles:
             self._draw_obstacles()
@@ -153,8 +154,6 @@ class BulletNavigationEnv(gym.Env):
                     self.debug_line_ids.append(line_id)
 
     def _draw_obstacles(self):
-        self.obstacle_ids = []
-        
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         for pos in self.obstacles:
             obs_id = p.loadURDF("cube.urdf", pos, globalScaling = 0.6, useFixedBase = True, physicsClientId = self.env.CLIENT)
