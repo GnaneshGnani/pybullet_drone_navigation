@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("--critic_lr", type = float, default = 1e-3)
 
     # PPO Specific
-    parser.add_argument("--ppo_epochs", type = int, default = 10)
+    parser.add_argument("--ppo_epochs", type = int, default = 3)
     parser.add_argument("--ppo_clip", type = float, default = 0.2)
     
     # Sensor Flags
@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--step_reward", type = float, default = 0.1)
+    parser.add_argument("--step_reward", type = float, default = 0.5)
     parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
     parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
@@ -233,16 +233,23 @@ def main():
     reward_window = deque(maxlen = 50)
     best_reward = -float('inf')
 
-    try:
-        for episode in range(args.episodes):
-            print(f"Configuring Task: {args.task.upper()}")
-            if args.task == "hover":
+    if args.task == "hover":
                 waypoints = wpm.generate_hover_target(altitude = 1.0)
-            
-            elif args.task == "square":
-                waypoints = wpm.generate_square_path(side_length = 2.0, altitude = 1.5)
+    
+    elif args.task == "square":
+        waypoints = wpm.generate_square_path(side_length = 2.0, altitude = 1.5)
+    
+    elif args.task == "random":
+        waypoints = wpm.generate_random_walk_path()
+        if args.use_obstacles:
+            obstacles = wpm.generate_obstacles(num_obstacles = 6)
+            env.obstacles = obstacles
 
-            elif args.task == "random":
+    try:
+        for episode in range(1, args.episodes):
+            print(f"Configuring Task: {args.task.upper()}")
+
+            if args.task == "random" and (episode % 25) == 0:
                 waypoints = wpm.generate_random_walk_path()
                 if args.use_obstacles:
                     obstacles = wpm.generate_obstacles(num_obstacles = 6)

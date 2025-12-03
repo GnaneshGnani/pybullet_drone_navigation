@@ -16,7 +16,7 @@ def initialize_agent(args, state_dim, action_dim, max_action):
         return PPOAgent(
             state_dim, action_dim, max_action,
             actor_lr = args.actor_lr, critic_lr = args.critic_lr,
-            n_epochs = 10, batch_size = args.batch_size, # Added n_epochs default
+            n_epochs = args.ppo_epochs, batch_size = args.batch_size,
             use_camera = args.use_camera, use_depth = args.use_depth,
             use_lidar = args.use_lidar
         )

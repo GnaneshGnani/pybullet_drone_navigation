@@ -226,14 +226,14 @@ class BulletNavigationEnv(gym.Env):
         dist = np.linalg.norm(current_pos - self.target_pos)
 
         progress = self.prev_dist - dist
-        reward += 30.0 * progress
+        reward += 2.0 * progress
 
         # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
         diff_action = action - self.prev_action
-        reward -= 0.01 * np.linalg.norm(diff_action) ** 2
+        reward -= 0.001 * np.linalg.norm(diff_action) ** 2
 
         # High Velocity Penalty
-        reward -= 0.05 * np.linalg.norm(lin_vel) ** 2
+        reward -= 0.005 * np.linalg.norm(lin_vel) ** 2
         reward -= 0.005 * np.linalg.norm(ang_vel) ** 2
 
         # Alignment Penalty
@@ -263,9 +263,10 @@ class BulletNavigationEnv(gym.Env):
 
         # print(
         #     self.step_reward,
-        #     30.0 * progress,
-        #     -0.01 * np.linalg.norm(diff_action) ** 2,
-        #     -0.05 * np.linalg.norm(lin_vel) ** 2,
+        #     2.0 * progress,
+        #     -0.001 * np.linalg.norm(diff_action) ** 2,
+        #     -0.005 * np.linalg.norm(lin_vel) ** 2,
+        #     -0.005 * np.linalg.norm(ang_vel) ** 2,
         #     -0.1 * heading_penalty,
         #     0.1 * alignment
         # )
@@ -292,19 +293,21 @@ class BulletNavigationEnv(gym.Env):
         contact_points = p.getContactPoints(bodyA = self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         if len(contact_points) > 0:
             print("Crashed!")
+            reward += self.crash_penalty
             terminated = True
 
             hit_body_id = contact_points[0][2]
             if hit_body_id in self.obstacle_ids:
-                reward += self.crash_penalty
+            #     reward += self.crash_penalty
                 print(f"Hit Obstacle! (Fixed Penalty: {self.crash_penalty})")
                 
             else:
-                ratio = np.clip(self.step_count / self.max_steps, 1e-6, 1.0)
-                dynamic_crash_penalty = math.log(ratio) * 40
+            #     ratio = np.clip(self.step_count / self.max_steps, 1e-6, 1.0)
+            #     dynamic_crash_penalty = math.log(ratio) * 40
                 
-                reward += dynamic_crash_penalty
-                print(f"Hit Ground! (Dynamic Penalty: {dynamic_crash_penalty:.2f})")
+            #     reward += dynamic_crash_penalty
+                # print(f"Hit Ground! (Dynamic Penalty: {dynamic_crash_penalty:.2f})")
+                print(f"Hit Ground! (Dynamic Penalty: {self.crash_penalty:.2f})")
 
         if dist > self.max_dist_from_target:
             print("Timeout!")
