@@ -259,10 +259,22 @@ def main():
             
             reward, length, metrics, info = run_one_episode(env, agent, args.max_steps, args.algo, not args.headless)
 
-            if (length + 1) == args.max_steps: print("Max Steps!")
 
             reward_window.append(reward)
             avg_reward = np.mean(reward_window)
+
+            print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
+
+            if (length + 1) == args.max_steps: 
+                print("Max Steps!")
+            
+            else:
+                if info['waypoints_reached'] == 11:
+                    reward -= args.episode_completion_reward
+                else:
+                    reward += args.crash_penalty # Not logging the bonus rewards or penlties for accurate avg. step
+            
+            reward -= (info['waypoints_reached'] * args.waypoint_bonus)
 
             logger.report_scalar(title = "Training", series = "Avg Step Reward", value = float(reward) / (length + 1), iteration = episode)
             logger.report_scalar(title = "Training", series = "Avg Total Reward (50 ep)", value = float(avg_reward), iteration = episode)
@@ -288,8 +300,6 @@ def main():
                 logger.report_scalar(title = "Debug", series = "Critic Learning Rate", value = schedulers[1].get_last_lr()[0], iteration = episode)
                 if args.algo == "sac":
                     logger.report_scalar(title = "Debug", series = "Alpha Learning Rate", value = schedulers[2].get_last_lr()[0], iteration = episode)
-
-            print(f"Ep {episode} | Reward: {reward:.2f} | Avg: {avg_reward:.2f} | WPs: {info['waypoints_reached']}")
             
             logger.flush()
 
