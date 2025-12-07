@@ -239,7 +239,7 @@ class BulletNavigationEnv(gym.Env):
         dist = np.linalg.norm(current_pos - self.target_pos)
 
         progress = self.prev_dist - dist
-        reward += self.progress_weight * progress
+        reward += self.progress_weight * max(0.0, progress)
 
         # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
         diff_action = action - self.prev_action
