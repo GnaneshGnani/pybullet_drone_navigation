@@ -380,7 +380,7 @@ class BulletNavigationEnv(gym.Env):
             target_direction = np.zeros(3)
 
         lin_vel_body = r_inv.apply(lin_vel)
-        ang_vel_body = r_inv.apply(lin_vel)
+        ang_vel_body = r_inv.apply(ang_vel)
 
         lin_vel_scaled = np.clip(lin_vel_body, -1.0, 1.0) / 1.0
         ang_vel_scaled = np.clip(ang_vel_body, -5.0, 5.0) / 5.0
