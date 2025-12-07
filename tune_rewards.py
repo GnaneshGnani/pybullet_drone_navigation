@@ -34,7 +34,7 @@ def run_policy(env, policy_type="hover", steps=500):
         if terminated or truncated:
             break
             
-    avg_step_reward = total_reward / (t + 1)
+    avg_step_reward = (total_reward + 100) / (t + 1)
     
     print(f"Result: {t+1} Steps")
     print(f"Total Episode Reward: {total_reward:.2f}")
@@ -54,7 +54,17 @@ def main():
         waypoints=waypoints,
         gui=False, # Set True if you want to watch
         use_obstacles=False,
-        max_dist_from_target=10.0
+        waypoint_threshold = 0.25,
+        waypoint_bonus = 100,
+        crash_penalty = -100,
+        timeout_penalty = -10,
+        step_reward = 0.1,
+        episode_completion_reward = 100,
+        max_dist_from_target = 7.5,
+        action_smoothing = 0.75,
+        action_limits = [1, 1, 1, 1],
+        hardcoded_yaw = False,
+        max_steps = 1000
     )
 
     # 1. Test Hover (Should generally be stable, reward shouldn't be massively negative)

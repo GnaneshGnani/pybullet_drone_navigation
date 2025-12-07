@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--use_obstacles", action = "store_true")
     
     # Reward Shaping
-    parser.add_argument("--step_reward", type = float, default = 0.5)
+    parser.add_argument("--step_reward", type = float, default = 0.1)
     parser.add_argument("--waypoint_bonus", type = float, default = 100.0)
     parser.add_argument("--crash_penalty", type = float, default = -100.0)
     parser.add_argument("--timeout_penalty", type = float, default = -10.0)
@@ -246,7 +246,7 @@ def main():
             env.obstacles = obstacles
 
     try:
-        for episode in range(1, args.episodes):
+        for episode in range(1, args.episodes + 1):
             print(f"Configuring Task: {args.task.upper()}")
 
             if args.task == "random" and (episode % 25) == 0:

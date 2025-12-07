@@ -35,6 +35,19 @@ class BulletNavigationEnv(gym.Env):
         self.waypoint_bonus = waypoint_bonus
         self.timeout_penalty = timeout_penalty
         self.episode_completion_reward = episode_completion_reward
+
+        # Reward Weights
+        self.progress_weight = 50.0
+        self.acceleration_weight = 0.0005
+        self.lin_velocity_weight = 0.0025
+        self.ang_velocity_weight = 0.0004
+        self.alignment_weight = 0.004
+
+        # self.progress_weight = 30.0
+        # self.acceleration_weight = 0.01
+        # self.lin_velocity_weight = 0.05
+        # self.ang_velocity_weight = 0.005
+        # self.alignment_weight = 0.0
         
         self.waypoint_threshold = waypoint_threshold
 
@@ -226,15 +239,15 @@ class BulletNavigationEnv(gym.Env):
         dist = np.linalg.norm(current_pos - self.target_pos)
 
         progress = self.prev_dist - dist
-        reward += 30.0 * progress
+        reward += self.progress_weight * progress
 
         # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
         diff_action = action - self.prev_action
-        reward -= 0.001 * np.linalg.norm(diff_action) ** 2
+        reward -= self.acceleration_weight * np.linalg.norm(diff_action) ** 2
 
         # High Velocity Penalty
-        reward -= 0.005 * np.linalg.norm(lin_vel) ** 2
-        reward -= 0.005 * np.linalg.norm(ang_vel) ** 2
+        reward -= self.lin_velocity_weight * np.linalg.norm(lin_vel) ** 2
+        reward -= self.ang_velocity_weight * np.linalg.norm(ang_vel) ** 2
 
         # Alignment Penalty
         ## Get the direction vector to the target (Normalized)
@@ -256,23 +269,30 @@ class BulletNavigationEnv(gym.Env):
         # If you want it to be a pure penalty for misalignment:
         # Penalty is 0 when aligned, and high when facing away.
         heading_penalty = (1.0 - alignment) 
-        reward -= 0.1 * heading_penalty 
+        reward -= self.alignment_weight * heading_penalty 
 
         # OR, if you prefer positive reinforcement (Reward for facing correctly):
         # reward += 0.1 * alignment
 
+        # print("Position:", current_pos, "Target Position:", self.target_pos)
+        # print("Distance", dist, "Prev. Distance:", self.prev_dist, "Progress:", progress)
+        # print("Linear Velocity:", lin_vel, np.linalg.norm(lin_vel) ** 2)
+        print("Angular Velocity:", ang_vel, np.linalg.norm(ang_vel) ** 2)
+        # print("Action:", action, "Prev. Action:", self.prev_action, np.linalg.norm(diff_action) ** 2)
+        # print("Alignment:", alignment)
+
         # print(
         #     self.step_reward,
-        #     30.0 * progress,
-        #     -0.001 * np.linalg.norm(diff_action) ** 2,
-        #     -0.005 * np.linalg.norm(lin_vel) ** 2,
-        #     -0.005 * np.linalg.norm(ang_vel) ** 2,
-        #     -0.1 * heading_penalty,
-        #     0.1 * alignment
+        #     self.progress_weight * progress,
+        #     -self.acceleration_weight * np.linalg.norm(diff_action) ** 2,
+        #     -self.lin_velocity_weight * np.linalg.norm(lin_vel) ** 2,
+        #     -self.ang_velocity_weight * np.linalg.norm(ang_vel) ** 2,
+        #     -self.alignment_weight * heading_penalty,
+        #     self.alignment_weight * alignment
         # )
 
-        # print("Alignment:", alignment)
-        # print("Total Reward:", reward, reward + 0.1 * heading_penalty)
+        # print("Total Reward:", reward)
+        # print("Total Reward without Alignment:", reward + 0.1 * heading_penalty)
         # print()
 
         if dist < self.waypoint_threshold:
@@ -286,9 +306,10 @@ class BulletNavigationEnv(gym.Env):
 
             else:
                 self.target_pos = self.waypoints[self.current_wp_idx]
-                print(f"--- Reached Waypoint {self.current_wp_idx} ---")
+                print(f"--- Reached Waypoint {self.current_wp_idx} in {self.step_count} steps---")
                 dist = np.linalg.norm(current_pos - self.target_pos)
                 self.prev_dist = dist
+                self.step_count = 0
 
         contact_points = p.getContactPoints(bodyA = self.env.DRONE_IDS[0], physicsClientId = self.env.CLIENT)
         if len(contact_points) > 0:
@@ -359,9 +380,10 @@ class BulletNavigationEnv(gym.Env):
             target_direction = np.zeros(3)
 
         lin_vel_body = r_inv.apply(lin_vel)
+        ang_vel_body = r_inv.apply(lin_vel)
 
-        lin_vel_scaled = np.clip(lin_vel_body, -2.0, 2.0) / 2.0
-        ang_vel_scaled = np.clip(ang_vel, -3.0, 3.0) / 3.0
+        lin_vel_scaled = np.clip(lin_vel_body, -1.0, 1.0) / 1.0
+        ang_vel_scaled = np.clip(ang_vel_body, -5.0, 5.0) / 5.0
 
         # target vector, orientation, velocities, and previous action
         state_vec = np.concatenate([
