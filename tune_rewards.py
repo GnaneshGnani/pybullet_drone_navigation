@@ -51,9 +51,10 @@ def main():
     
     # Note: Using obstacles=False to isolate flight dynamics first
     env = BulletNavigationEnv(
-        waypoints=waypoints,
-        gui=False, # Set True if you want to watch
-        use_obstacles=False,
+        waypoints = waypoints,
+        gui = False, # Set True if you want to watch
+        use_obstacles = False,
+        use_lidar = True,
         waypoint_threshold = 0.25,
         waypoint_bonus = 100,
         crash_penalty = -100,

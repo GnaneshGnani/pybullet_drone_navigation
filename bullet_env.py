@@ -15,7 +15,7 @@ class BulletNavigationEnv(gym.Env):
                  waypoint_bonus = 100.0, crash_penalty = -100.0, timeout_penalty = -10.0, 
                  step_reward = -0.1, episode_completion_reward = 100.0, max_dist_from_target = 10.0, 
                  action_smoothing = 0.75, action_limits = None,  gui = False,  show_waypoints = False,
-                 hardcoded_yaw = False, max_steps = 5000):
+                 hardcoded_yaw = False, max_steps = 5000, lidar_threshold = 1.0, lidar_weight = 2.0):
         
         # Store a copy of the initial waypoints to detect the task type
         self.waypoints = waypoints
@@ -35,6 +35,7 @@ class BulletNavigationEnv(gym.Env):
         self.waypoint_bonus = waypoint_bonus
         self.timeout_penalty = timeout_penalty
         self.episode_completion_reward = episode_completion_reward
+        self.lidar_threshold = lidar_threshold
 
         # Reward Weights
         self.progress_weight = 50.0
@@ -42,6 +43,7 @@ class BulletNavigationEnv(gym.Env):
         self.lin_velocity_weight = 0.0025
         self.ang_velocity_weight = 0.0004
         self.alignment_weight = 0.004
+        self.lidar_weight = 0.5
 
         # self.progress_weight = 30.0
         # self.acceleration_weight = 0.01
@@ -239,8 +241,8 @@ class BulletNavigationEnv(gym.Env):
         dist = np.linalg.norm(current_pos - self.target_pos)
 
         progress = self.prev_dist - dist
-        # progress_reward = self.progress_weight * progress
-        progress_reward = np.exp(-1 * dist)
+        progress_reward = self.progress_weight * progress
+        # progress_reward = np.exp(-1 * dist)
         reward += progress_reward
 
         # Acceleration/Jerk Penalty: Penalize changing motor commands too quickly
@@ -276,6 +278,32 @@ class BulletNavigationEnv(gym.Env):
         # OR, if you prefer positive reinforcement (Reward for facing correctly):
         # reward += 0.1 * alignment
 
+        # Lidar Penalty
+        lidar_penalty = 0.0
+
+        if self.use_lidar and "lidar" in obs:
+            lidar_data = obs["lidar"]
+            
+            # Find the closest obstacle
+            min_dist = np.min(lidar_data)
+            
+            # Penalize if inside the safety bubble
+            if min_dist < self.lidar_threshold:
+                # Exponential penalty: significantly higher as it gets closer
+                # (1.0 - min_dist) scales from 0 (at threshold) to 1 (at crash)
+                # At 1.0m = 0 penalty
+                # At 0.5m = -1.0 penalty
+                # At 0.0m = -2.0 penalty
+                lidar_penalty -= self.lidar_weight * (1.0 - (min_dist / self.lidar_threshold))
+                
+                # Add a "Panic" penalty if it's REALLY close (e.g., < 0.2m)
+                # if min_dist < 0.2:
+                #     lidar_penalty -= 5.0
+            
+            # print("Lidar:", min_dist)
+
+        reward += lidar_penalty
+
         # print("Position:", current_pos, "Target Position:", self.target_pos)
         # print("Distance", dist, "Prev. Distance:", self.prev_dist, "Progress:", progress)
         # print("Linear Velocity:", lin_vel, "Norm:", np.linalg.norm(lin_vel) ** 2)
@@ -290,7 +318,8 @@ class BulletNavigationEnv(gym.Env):
         #     -self.lin_velocity_weight * np.linalg.norm(lin_vel) ** 2,
         #     -self.ang_velocity_weight * np.linalg.norm(ang_vel) ** 2,
         #     -self.alignment_weight * heading_penalty,
-        #     self.alignment_weight * alignment
+        #     self.alignment_weight * alignment,
+        #     lidar_penalty
         # )
 
         # print("Total Reward:", reward)
